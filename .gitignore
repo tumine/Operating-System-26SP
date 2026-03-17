@@ -1,0 +1,11 @@
+ref
+build
+models
+gpt
+PPTs
+docs
+.cache
+kernel.elf
+.cache
+compiler_commands.json
+fs.img
