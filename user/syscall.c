@@ -96,3 +96,7 @@ int unlink(const char *path) {
 int link(const char *oldpath, const char *newpath) {
     return (int)__syscall(SYS_link, (long)oldpath, (long)newpath, 0);
 }
+
+int hello_id(int tag) {
+    return (int)__syscall(SYS_hello_id, tag, 0, 0);
+}

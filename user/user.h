@@ -27,6 +27,7 @@ int pipe(int fd[2]);
 int mkdir(const char *path);
 int unlink(const char *path);
 int link(const char *oldpath, const char *newpath);
+int hello_id(int tag);
 
 // user library helpers
 int stat(const char *path, struct stat *st);

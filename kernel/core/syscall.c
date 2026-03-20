@@ -609,6 +609,19 @@ static uint64 sys_pipe(void) {
     return 0;
 }
 
+static uint64 sys_hello_id(void) {
+    struct proc *p = myproc();
+    if (p == 0) {
+        return (uint64)-1;
+    }
+
+    int tag = (int)p->trapframe->a0;
+
+    printf("[sys_hello_id] pid=%d, tag=%d\n", p->pid, tag);
+
+    return (uint64)tag;
+}
+
 static uint64 (*syscalls[])(void) = {
     [SYS_write] = sys_write,
     [SYS_read] = sys_read,
@@ -631,6 +644,7 @@ static uint64 (*syscalls[])(void) = {
     [SYS_mkdir] = sys_mkdir,
     [SYS_unlink] = sys_unlink,
     [SYS_link] = sys_link,
+    [SYS_hello_id] = sys_hello_id,
 };
 
 void syscall(void) {
