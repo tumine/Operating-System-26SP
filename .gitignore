@@ -9,3 +9,6 @@ kernel.elf
 .cache
 compiler_commands.json
 fs.img
+
+# Markdown PDF temp file
+*_tmp.html

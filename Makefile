@@ -115,7 +115,36 @@ SRCS = \
 KOBJS = $(patsubst %.c,$(BUILD)/%.o,$(filter %.c,$(SRCS)))
 KOBJS += $(patsubst %.S,$(BUILD)/%.o,$(filter %.S,$(SRCS)))
 
-UPROGS = init sh hello quiet stressio stsched stressdisk pid uptime sleep killer kill pingpong fstat forktest zombie echo cat wc grep ls find xargs fstest mkdir rm ln touch logtest
+UPROGS = init 	\
+sh 				\
+hello 			\
+quiet 			\
+stressio 		\
+stsched 		\
+stressdisk 		\
+pid 			\
+uptime 			\
+sleep 			\
+killer 			\
+kill 			\
+pingpong 		\
+fstat 			\
+forktest 		\
+zombie 			\
+echo 			\
+cat 			\
+wc 				\
+grep 			\
+ls 				\
+find 			\
+xargs 			\
+fstest 			\
+mkdir 			\
+rm 				\
+ln 				\
+touch 			\
+logtest 		\
+sid
 UCOMMON = $(UBUILD)/entry.o $(UBUILD)/syscall.o $(UBUILD)/printf.o $(UBUILD)/ulib.o
 UOBJS = $(UCOMMON) $(patsubst %,$(UBUILD)/%.o,$(UPROGS))
 UELFS = $(patsubst %,$(UBUILD)/%.elf,$(UPROGS))
@@ -159,7 +188,37 @@ fs: kernel.elf $(COMDB) fsimg
 	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS)
 
 fsimg: $(UELFS) tools/mkfsimg.py
-	python3 tools/mkfsimg.py --image fs.img --size-blocks 65536 --add init=$(UBUILD)/init.elf --add sh=$(UBUILD)/sh.elf --add hello=$(UBUILD)/hello.elf --add quiet=$(UBUILD)/quiet.elf --add stressio=$(UBUILD)/stressio.elf --add stsched=$(UBUILD)/stsched.elf --add stressdisk=$(UBUILD)/stressdisk.elf --add pid=$(UBUILD)/pid.elf --add uptime=$(UBUILD)/uptime.elf --add sleep=$(UBUILD)/sleep.elf --add killer=$(UBUILD)/killer.elf --add kill=$(UBUILD)/kill.elf --add pingpong=$(UBUILD)/pingpong.elf --add fstat=$(UBUILD)/fstat.elf --add forktest=$(UBUILD)/forktest.elf --add zombie=$(UBUILD)/zombie.elf --add echo=$(UBUILD)/echo.elf --add cat=$(UBUILD)/cat.elf --add wc=$(UBUILD)/wc.elf --add grep=$(UBUILD)/grep.elf --add ls=$(UBUILD)/ls.elf --add find=$(UBUILD)/find.elf --add xargs=$(UBUILD)/xargs.elf --add fstest=$(UBUILD)/fstest.elf --add mkdir=$(UBUILD)/mkdir.elf --add rm=$(UBUILD)/rm.elf --add ln=$(UBUILD)/ln.elf --add touch=$(UBUILD)/touch.elf --add logtest=$(UBUILD)/logtest.elf
+	python3 tools/mkfsimg.py --image fs.img --size-blocks 65536 	\
+	--add init=$(UBUILD)/init.elf 									\
+	--add sh=$(UBUILD)/sh.elf 										\
+	--add hello=$(UBUILD)/hello.elf 								\
+	--add quiet=$(UBUILD)/quiet.elf 								\
+	--add stressio=$(UBUILD)/stressio.elf 							\
+	--add stsched=$(UBUILD)/stsched.elf 							\
+	--add stressdisk=$(UBUILD)/stressdisk.elf 						\
+	--add pid=$(UBUILD)/pid.elf 									\
+	--add uptime=$(UBUILD)/uptime.elf 								\
+	--add sleep=$(UBUILD)/sleep.elf 								\
+	--add killer=$(UBUILD)/killer.elf 								\
+	--add kill=$(UBUILD)/kill.elf 									\
+	--add pingpong=$(UBUILD)/pingpong.elf 							\
+	--add fstat=$(UBUILD)/fstat.elf 								\
+	--add forktest=$(UBUILD)/forktest.elf 							\
+	--add zombie=$(UBUILD)/zombie.elf 								\
+	--add echo=$(UBUILD)/echo.elf 									\
+	--add cat=$(UBUILD)/cat.elf 									\
+	--add wc=$(UBUILD)/wc.elf 										\
+	--add grep=$(UBUILD)/grep.elf 									\
+	--add ls=$(UBUILD)/ls.elf 										\
+	--add find=$(UBUILD)/find.elf 									\
+	--add xargs=$(UBUILD)/xargs.elf 								\
+	--add fstest=$(UBUILD)/fstest.elf 								\
+	--add mkdir=$(UBUILD)/mkdir.elf 								\
+	--add rm=$(UBUILD)/rm.elf 										\
+	--add ln=$(UBUILD)/ln.elf 										\
+	--add touch=$(UBUILD)/touch.elf 								\
+	--add logtest=$(UBUILD)/logtest.elf 							\
+	--add sid=$(UBUILD)/sid.elf
 
 qemu-gdb: kernel.elf $(COMDB) fsimg
 	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS) $(QEMUGDB)
