@@ -220,7 +220,7 @@ fsimg: $(UELFS) tools/mkfsimg.py
 	--add touch=$(UBUILD)/touch.elf 								\
 	--add logtest=$(UBUILD)/logtest.elf 							\
 	--add sid=$(UBUILD)/sid.elf										\
-	--add sid=$(UBUILD)/test_hello_id.elf
+	--add test_hello_id=$(UBUILD)/test_hello_id.elf
 
 qemu-gdb: kernel.elf $(COMDB) fsimg
 	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS) $(QEMUGDB)
