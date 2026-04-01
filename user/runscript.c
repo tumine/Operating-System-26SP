@@ -175,7 +175,75 @@ int main(int argc, char *argv[]) {
     }
 
     const char *script = argv[1];
-    //TODO: 补充处理脚本的核心逻辑，注意使用上述定义的各项工具函数
-    
+    int fd = open(script, O_RDONLY);  // 文件描述符
+    if (fd == -1)     // 文件打开失败
+    {
+        fprintf(2, "error opening script parameter (%s)\n", script);
+        exit(1);
+    }
+
+    struct line_reader lr;      // 存储和解析脚本文件
+    char oriLine[MAXLINE];      // 暂存原始单行指令
+    char *cmd_argv[MAXARGS];    // 单行指令附带的参数
+    char path[MAXLINE];
+    int status;                 // 子进程（指令）执行结束状态
+    int pid;
+    int ret;
+
+    lr_init(&lr, fd);
+
+    // 逐行读取并执行脚本
+    while ((ret = lr_readline(&lr, oriLine, MAXLINE)) > 0)
+    {
+        // 预处理，跳过空行和注释
+        int argc = prepare_argv(oriLine, cmd_argv, MAXARGS);
+        if (argc == 0)          // 本行无需执行
+            continue;
+        else if (argc < 0)      // 本行出现参数过多等错误
+        {
+            fprintf(2, "runscript: too many arguments\n");
+            exit(1);
+        }
+
+        // 创建子进程处理当前指令
+        pid = fork();
+        if (pid < 0)
+        {
+            fprintf(2, "runscript: fork failed\n");
+            exit(1);
+        }
+        else if (pid == 0)
+        {
+            // 子进程执行命令
+            if (makepath(cmd_argv[0], path, MAXLINE) < 0)   // 缓冲区不足
+            {
+                fprintf(2, "runscript: path too long\n");
+                exit(1);
+            }
+            exec(path, cmd_argv);   // 构造路径完成，执行指令
+            // 调用 exec 后直接替换子进程映像，因此正常执行指令的情况下不会执行下方的异常处理内容
+            fprintf(2, "runscript: execute command %s failed\n", path);
+            exit(1);    // 子进程执行失败
+        }
+
+        // 父进程等待子进程结束后继续执行
+        wait(&status);
+        if (status == -1)   // 执行失败/无子进程
+            exit(1);        // 子进程中理论上已写明报错信息，无需重复输出报错信息
+    }
+
+    // 检查读取是否出错
+    if (ret == -1)
+    {
+        fprintf(2, "runscript: read error\n");
+        exit(1);
+    }
+    else if (ret == -2)
+    {
+        fprintf(2, "runscript: line too long\n");
+        exit(1);
+    }
+
+    close(fd);
     exit(0);
 }
