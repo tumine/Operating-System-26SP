@@ -6,6 +6,7 @@
 #include "fs.h"
 #include "fcntl.h"
 #include "param.h"
+#include "gpu.h"
 #include "log.h"
 
 static uint64 sys_write(void) {
@@ -300,8 +301,30 @@ static uint64 sys_open(void) {
 
     ilock(ip);
     short type = ip->type;
+    short major = ip->major;
     iunlock(ip);
     if (type == T_DIR && ((omode & O_WRONLY) || (omode & O_RDWR))) {
+        iput(ip);
+        p->ofile[fd] = 0;
+        fileclose(f);
+        return (uint64)-1;
+    }
+
+    if (type == T_DEVICE) {
+        if (major == GPU_DEV_MAJOR) {
+            f->type = FD_GPU;
+            f->readable = !(omode & O_WRONLY);
+            f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+            iput(ip);
+            if (f->readable == 0 && f->writable == 0) {
+                p->ofile[fd] = 0;
+                fileclose(f);
+                return (uint64)-1;
+            }
+            return (uint64)fd;
+        }
+
+        // 未实现的其他设备
         iput(ip);
         p->ofile[fd] = 0;
         fileclose(f);
@@ -314,7 +337,7 @@ static uint64 sys_open(void) {
 
     f->type = FD_INODE;
     f->ip = ip;
-    f->off = 0;
+    f->off = (omode & O_APPEND) && type == T_FILE ? ip->size : 0;
     f->readable = !(omode & O_WRONLY);
     f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
     if (f->readable == 0 && f->writable == 0) {
@@ -622,6 +645,60 @@ static uint64 sys_hello_id(void) {
     return (uint64)tag;
 }
 
+static uint64 sys_dup2(void) {
+    struct proc *p = myproc();
+    int oldfd = (int)p->trapframe->a0;
+    int newfd = (int)p->trapframe->a1;
+
+    if (oldfd < 0 || oldfd >= NOFILE || newfd < 0 || newfd >= NOFILE) {
+        return (uint64)-1;
+    }
+    struct file *f = p->ofile[oldfd];
+    if (f == 0) {
+        return (uint64)-1;
+    }
+    if (oldfd == newfd) {
+        return (uint64)newfd;
+    }
+    if (p->ofile[newfd] != 0) {
+        fileclose(p->ofile[newfd]);
+        p->ofile[newfd] = 0;
+    }
+    p->ofile[newfd] = filedup(f);
+    return (uint64)newfd;
+}
+
+static uint64 sys_getcwd(void) {
+    struct proc *p = myproc();
+    char *buf = (char *)p->trapframe->a0;
+    int max = (int)p->trapframe->a1;
+
+    if (buf == 0 || max < 2) {
+        return (uint64)-1;
+    }
+    struct inode *cwd = proc_cwddup();
+    if (cwd == 0) {
+        return (uint64)-1;
+    }
+    char kbuf[MAXPATH];
+    if (getcwd_path(cwd, kbuf, sizeof(kbuf)) < 0) {
+        iput(cwd);
+        return (uint64)-1;
+    }
+    iput(cwd);
+    int len = 0;
+    while (kbuf[len] != '\0' && len < max - 1) {
+        len++;
+    }
+    len++;
+    if (copyout(p->pagetable, (uint64)buf, kbuf, (uint64)len) < 0) {
+        return (uint64)-1;
+    }
+    return 0;
+}
+
+
+
 static uint64 (*syscalls[])(void) = {
     [SYS_write] = sys_write,
     [SYS_read] = sys_read,
@@ -645,6 +722,8 @@ static uint64 (*syscalls[])(void) = {
     [SYS_unlink] = sys_unlink,
     [SYS_link] = sys_link,
     [SYS_hello_id] = sys_hello_id,
+    [SYS_dup2] = sys_dup2,
+    [SYS_getcwd] = sys_getcwd,
 };
 
 void syscall(void) {

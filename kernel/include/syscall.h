@@ -22,6 +22,9 @@
 #define SYS_mkdir 19
 #define SYS_unlink 20
 #define SYS_link 21
+#define SYS_dup2 22
+#define SYS_getcwd 23
+
 
 #define SYS_hello_id 25
 
