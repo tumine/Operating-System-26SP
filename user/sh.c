@@ -128,36 +128,36 @@ static int process_redirect(int argc, char *argv[], int fd[2]) {
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], ">") == 0) {
             if (i + 1 >= argc) {
-                break;
+                printf("[sh] missing file after >\n");
+                return -1;
             }
-            //TODO: 使用open函数打开文件，并设置正确的打开模式（替换此处的-1）
-            int tfd = -1;
+            int tfd = open(argv[i + 1], O_WRONLY | O_CREATE | O_TRUNC);
             if (tfd >= 0) {
                 fd[1] = tfd;
             } else {
-                printf("sh: open '%s' error\n", argv[i + 1]);
+                printf("[sh] open '%s' error\n", argv[i + 1]);
                 return -1;
             }
             i++;
         } else if (strcmp(argv[i], ">>") == 0) {
             if (i + 1 >= argc) {
-                break;
+                printf("[sh] missing file after >>\n");
+                return -1;
             }
-            //TODO: 使用open函数打开文件，并设置正确的打开模式（替换此处的-1）
-            int tfd = -1;
+            int tfd = open(argv[i + 1], O_WRONLY | O_CREATE | O_APPEND);
             if (tfd >= 0) {
                 fd[1] = tfd;
             } else {
-                printf("sh: open '%s' error\n", argv[i + 1]);
+                printf("[sh] open '%s' error\n", argv[i + 1]);
                 return -1;
             }
             i++;
         } else if (strcmp(argv[i], "<") == 0) {
             if (i + 1 >= argc) {
-                break;
+                printf("[sh] missing file after <\n");
+                return -1;
             }
-            //TODO: 使用open函数打开文件，并设置正确的打开模式（替换此处的-1）
-            int tfd = -1;
+            int tfd = open(argv[i + 1], O_RDONLY);
             if (tfd >= 0) {
                 fd[0] = tfd;
             } else {
@@ -210,6 +210,8 @@ int main(void) {
     char path[MAXLINE];
     char *argv[MAXARGS];
 
+    char *cmds[MAXCMDS];
+
     for (;;) {
         char cwd[128];
         if (getcwd(cwd, sizeof(cwd)) < 0) {
@@ -222,69 +224,74 @@ int main(void) {
             printf("\n[sh] input closed\n");
             exit(0);
         }
-        //TODO: 在这里分割多指令，并循环按照下面流程顺序处理每条指令
-        rstrip(skipspace(line));
-        if (line[0] == '\0') {
-            continue;
-        }
 
-        int argc = parseargs(line, argv, MAXARGS);
-        if (argc < 0) {
-            printf("[sh] too many args\n");
-            continue;
-        }
-        if (argc == 0) {
-            continue;
-        }
+        int cmdCount = split_commands(line, cmds, MAXCMDS);
 
-        int fd[2];
-        argc = process_redirect(argc, argv, fd);
-        if (argc < 0) {
-            printf("[sh] redirect failed\n");
-            continue;
-        }
-        if (run_builtin(argc, argv) == 0) {
-            if (fd[0] != STDIN_FILENO) {
-                close(fd[0]);
+        for (int i = 0; i < cmdCount; i++)
+        {
+            rstrip(skipspace(cmds[i]));
+            if (cmds[i][0] == '\0') {
+                continue;
             }
-            if (fd[1] != STDOUT_FILENO) {
-                close(fd[1]);
+
+            int argc = parseargs(cmds[i], argv, MAXARGS);
+            if (argc < 0) {
+                printf("[sh] too many args\n");
+                continue;
             }
-            continue;
-        }
+            if (argc == 0) {
+                continue;
+            }
 
-        char *cmd = argv[0];
-        if (makepath(cmd, path, sizeof(path)) < 0) {
-            printf("[sh] command too long\n");
+            int fd[2];
+            argc = process_redirect(argc, argv, fd);
+            if (argc < 0) {
+                printf("[sh] redirect failed\n");
+                continue;
+            }
+            if (run_builtin(argc, argv) == 0) {
+                if (fd[0] != STDIN_FILENO) {
+                    close(fd[0]);
+                }
+                if (fd[1] != STDOUT_FILENO) {
+                    close(fd[1]);
+                }
+                continue;
+            }
+
+            char *cmd = argv[0];
+            if (makepath(cmd, path, sizeof(path)) < 0) {
+                printf("[sh] command too long\n");
+                if (fd[0] != STDIN_FILENO) close(fd[0]);
+                if (fd[1] != STDOUT_FILENO) close(fd[1]);
+                continue;
+            }
+            argv[0] = path;
+
+            int pid = fork();
+            if (pid < 0) {
+                printf("[sh] fork failed\n");
+                if (fd[0] != STDIN_FILENO) close(fd[0]);
+                if (fd[1] != STDOUT_FILENO) close(fd[1]);
+                continue;
+            }
+            if (pid == 0) {
+                dup2(fd[0], STDIN_FILENO);
+                dup2(fd[1], STDOUT_FILENO);
+                if (fd[0] != STDIN_FILENO) close(fd[0]);
+                if (fd[1] != STDOUT_FILENO) close(fd[1]);
+                exec(path, argv);
+                printf("[sh] exec failed\n");
+                exit(127);
+            }
+
             if (fd[0] != STDIN_FILENO) close(fd[0]);
             if (fd[1] != STDOUT_FILENO) close(fd[1]);
-            continue;
-        }
-        argv[0] = path;
 
-        int pid = fork();
-        if (pid < 0) {
-            printf("[sh] fork failed\n");
-            if (fd[0] != STDIN_FILENO) close(fd[0]);
-            if (fd[1] != STDOUT_FILENO) close(fd[1]);
-            continue;
-        }
-        if (pid == 0) {
-            dup2(fd[0], STDIN_FILENO);
-            dup2(fd[1], STDOUT_FILENO);
-            if (fd[0] != STDIN_FILENO) close(fd[0]);
-            if (fd[1] != STDOUT_FILENO) close(fd[1]);
-            exec(path, argv);
-            printf("[sh] exec failed\n");
-            exit(127);
-        }
-
-        if (fd[0] != STDIN_FILENO) close(fd[0]);
-        if (fd[1] != STDOUT_FILENO) close(fd[1]);
-
-        int status = 0;
-        if (wait(&status) < 0) {
-            printf("[sh] wait failed\n");
+            int status = 0;
+            if (wait(&status) < 0) {
+                printf("[sh] wait failed\n");
+            }
         }
     }
 }
