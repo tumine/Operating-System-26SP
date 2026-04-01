@@ -30,6 +30,7 @@ int link(const char *oldpath, const char *newpath);
 int hello_id(int tag);
 int dup2(int oldfd, int newfd);
 int getcwd(char *buf, int max);
+int ioctl(int fd, int cmd, uint64 arg);
 int printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 // user library helpers

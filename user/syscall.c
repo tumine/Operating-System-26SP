@@ -97,16 +97,18 @@ int link(const char *oldpath, const char *newpath) {
     return (int)__syscall(SYS_link, (long)oldpath, (long)newpath, 0);
 }
 
-int hello_id(int tag) {
-    return (int)__syscall(SYS_hello_id, tag, 0, 0);
-}
-
-
-
 int dup2(int oldfd, int newfd) {
     return (int)__syscall(SYS_dup2, oldfd, newfd, 0);
 }
 
 int getcwd(char *buf, int max) {
     return (int)__syscall(SYS_getcwd, (long)buf, max, 0);
+}
+
+int ioctl(int fd, int cmd, uint64 arg) {
+    return (int)__syscall(SYS_ioctl, fd, cmd, arg);
+}
+
+int hello_id(int tag) {
+    return (int)__syscall(SYS_hello_id, tag, 0, 0);
 }

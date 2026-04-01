@@ -697,7 +697,22 @@ static uint64 sys_getcwd(void) {
     return 0;
 }
 
+static uint64 sys_ioctl(void) {
+    struct proc *p = myproc();      // 获取所有进程信息
+    int fd = (int)p->trapframe->a0;
+    int cmd = (int)p->trapframe->a1;
+    uint64 arg = p->trapframe->a2;
 
+    if (fd < 0 || fd >= NOFILE)     // 校验 fd 合法性
+        return (uint64)-1;
+    
+    struct file *f = p->ofile[fd];  // 获取文件
+    if (f == 0)                     // 文件不存在
+        return (uint64)-1;
+
+    // 前置检查无误，调用系统调用返回结果
+    return (uint64)fileioctl(f, cmd, arg);
+}
 
 static uint64 (*syscalls[])(void) = {
     [SYS_write] = sys_write,
@@ -724,6 +739,7 @@ static uint64 (*syscalls[])(void) = {
     [SYS_hello_id] = sys_hello_id,
     [SYS_dup2] = sys_dup2,
     [SYS_getcwd] = sys_getcwd,
+    [SYS_ioctl] = sys_ioctl,
 };
 
 void syscall(void) {

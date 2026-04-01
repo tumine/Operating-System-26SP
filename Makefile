@@ -152,7 +152,9 @@ UPROGS = \
 	sid \
 	test_hello_id \
 	runscript \
-	rs_status 
+	rs_status \
+	gpu_stats \
+	gpudemo 
 UCOMMON = \
 	$(UBUILD)/entry.o \
 	$(UBUILD)/syscall.o \
@@ -237,7 +239,9 @@ fsimg: $(UELFS) tools/mkfsimg.py
 		--add sid=$(UBUILD)/sid.elf \
 		--add test_hello_id=$(UBUILD)/test_hello_id.elf \
 		--add runscript=$(UBUILD)/runscript.elf \
-		--add rs_status=$(UBUILD)/rs_status.elf 
+		--add rs_status=$(UBUILD)/rs_status.elf \
+		--add gpu_stats=$(UBUILD)/gpu_stats.elf \
+		--add gpudemo=$(UBUILD)/gpudemo.elf 
 
 qemu-gdb: kernel.elf $(COMDB) fsimg
 	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS) $(QEMUGDB)
