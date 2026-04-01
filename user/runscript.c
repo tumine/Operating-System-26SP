@@ -170,7 +170,7 @@ static int prepare_argv(char *line, char *argv[], int maxargs) {
  */
 int main(int argc, char *argv[]) {
     if (argc < 2) {
-        fprintf(2, "usage: runscript <script>\n");
+        fprintf(2, "[runscript] usage: runscript <script>\n");
         exit(1);
     }
 
@@ -178,7 +178,7 @@ int main(int argc, char *argv[]) {
     int fd = open(script, O_RDONLY);  // 文件描述符
     if (fd == -1)     // 文件打开失败
     {
-        fprintf(2, "error opening script parameter (%s)\n", script);
+        fprintf(2, "[runscript] error opening script parameter (%s)\n", script);
         exit(1);
     }
 
@@ -201,7 +201,7 @@ int main(int argc, char *argv[]) {
             continue;
         else if (argc < 0)      // 本行出现参数过多等错误
         {
-            fprintf(2, "runscript: too many arguments\n");
+            fprintf(2, "[runscript] too many arguments\n");
             exit(1);
         }
 
@@ -209,7 +209,7 @@ int main(int argc, char *argv[]) {
         pid = fork();
         if (pid < 0)
         {
-            fprintf(2, "runscript: fork failed\n");
+            fprintf(2, "[runscript] fork failed\n");
             exit(1);
         }
         else if (pid == 0)
@@ -217,30 +217,30 @@ int main(int argc, char *argv[]) {
             // 子进程执行命令
             if (makepath(cmd_argv[0], path, MAXLINE) < 0)   // 缓冲区不足
             {
-                fprintf(2, "runscript: path too long\n");
+                fprintf(2, "[runscript] path too long\n");
                 exit(1);
             }
             exec(path, cmd_argv);   // 构造路径完成，执行指令
             // 调用 exec 后直接替换子进程映像，因此正常执行指令的情况下不会执行下方的异常处理内容
-            fprintf(2, "runscript: execute command %s failed\n", path);
+            fprintf(2, "[runscript] execute command %s failed\n", path);
             exit(1);    // 子进程执行失败
         }
 
         // 父进程等待子进程结束后继续执行
         wait(&status);
-        if (status == -1)   // 执行失败/无子进程
+        if (status != 0)    // 执行失败/无子进程
             exit(1);        // 子进程中理论上已写明报错信息，无需重复输出报错信息
     }
 
     // 检查读取是否出错
     if (ret == -1)
     {
-        fprintf(2, "runscript: read error\n");
+        fprintf(2, "[runscript] read error\n");
         exit(1);
     }
     else if (ret == -2)
     {
-        fprintf(2, "runscript: line too long\n");
+        fprintf(2, "[runscript] line too long\n");
         exit(1);
     }
 
