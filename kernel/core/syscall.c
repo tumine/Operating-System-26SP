@@ -698,7 +698,8 @@ static uint64 sys_getcwd(void) {
 }
 
 static uint64 sys_ioctl(void) {
-    struct proc *p = myproc();      // 获取所有进程信息
+    struct proc *p = myproc();      // 获取当前进程的所有信息
+    // 从 trapframe 读取参数
     int fd = (int)p->trapframe->a0;
     int cmd = (int)p->trapframe->a1;
     uint64 arg = p->trapframe->a2;
@@ -710,7 +711,7 @@ static uint64 sys_ioctl(void) {
     if (f == 0)                     // 文件不存在
         return (uint64)-1;
 
-    // 前置检查无误，调用系统调用返回结果
+    // 前置检查无误，调用 fileioctl 返回结果
     return (uint64)fileioctl(f, cmd, arg);
 }
 
