@@ -4,6 +4,7 @@
 
 int main(int argc, char *argv[])
 {
+    // 打开 GPU 设备
     int fd = open("/gpu", O_RDWR);
     if (fd < 0)
     {
@@ -13,7 +14,7 @@ int main(int argc, char *argv[])
 
     // 获取统计信息
     struct gpu_stats st;
-    if (ioctl(fd, GPU_IOC_GET_STATS, (uint64)&st) < 0)      // 调用失败，返回非零退出码
+    if (ioctl(fd, GPU_IOC_GET_STATS, (uint64)&st) < 0)      // 调用失败
     {
         fprintf(2, "[ioctl] GPU_IOC_GET_STATS failed\n");
         close(fd);

@@ -122,8 +122,8 @@ static int parseargs(char *line, char *argv[], int maxargs) {
 
 // 处理重定向符号（>, >>, <）：从 argv 中移除重定向参数并设置输入/输出 fd。
 static int process_redirect(int argc, char *argv[], int fd[2]) {
-    fd[0] = STDIN_FILENO;
-    fd[1] = STDOUT_FILENO;
+    fd[0] = STDIN_FILENO;       // 输入文件描述符缺省值
+    fd[1] = STDOUT_FILENO;      // 输出文件描述符缺省值
     int j = 0;
     for (int i = 0; i < argc; i++) {
         if (strcmp(argv[i], ">") == 0) {
@@ -131,9 +131,9 @@ static int process_redirect(int argc, char *argv[], int fd[2]) {
                 printf("[sh] missing file after >\n");
                 return -1;
             }
-            int tfd = open(argv[i + 1], O_WRONLY | O_CREATE | O_TRUNC);
+            int tfd = open(argv[i + 1], O_WRONLY | O_CREATE | O_TRUNC);     // 只写、必要时创建、丢弃已有数据
             if (tfd >= 0) {
-                fd[1] = tfd;
+                fd[1] = tfd;    // 输出文件描述符修改
             } else {
                 printf("[sh] open '%s' error\n", argv[i + 1]);
                 return -1;
@@ -144,9 +144,9 @@ static int process_redirect(int argc, char *argv[], int fd[2]) {
                 printf("[sh] missing file after >>\n");
                 return -1;
             }
-            int tfd = open(argv[i + 1], O_WRONLY | O_CREATE | O_APPEND);
+            int tfd = open(argv[i + 1], O_WRONLY | O_CREATE | O_APPEND);    // 只写、必要时创建、追加
             if (tfd >= 0) {
-                fd[1] = tfd;
+                fd[1] = tfd;    // 输出文件描述符修改
             } else {
                 printf("[sh] open '%s' error\n", argv[i + 1]);
                 return -1;
@@ -157,9 +157,9 @@ static int process_redirect(int argc, char *argv[], int fd[2]) {
                 printf("[sh] missing file after <\n");
                 return -1;
             }
-            int tfd = open(argv[i + 1], O_RDONLY);
+            int tfd = open(argv[i + 1], O_RDONLY);                          // 只读
             if (tfd >= 0) {
-                fd[0] = tfd;
+                fd[0] = tfd;    // 输入文件描述符修改
             } else {
                 printf("sh: open '%s' error\n", argv[i + 1]);
                 return -1;
@@ -210,7 +210,7 @@ int main(void) {
     char path[MAXLINE];
     char *argv[MAXARGS];
 
-    char *cmds[MAXCMDS];
+    char *cmds[MAXCMDS];    // 存储分割得到的每条指令
 
     for (;;) {
         char cwd[128];
@@ -227,6 +227,7 @@ int main(void) {
 
         int cmdCount = split_commands(line, cmds, MAXCMDS);
 
+        // 依次处理每条指令
         for (int i = 0; i < cmdCount; i++)
         {
             rstrip(skipspace(cmds[i]));
@@ -275,18 +276,19 @@ int main(void) {
                 if (fd[1] != STDOUT_FILENO) close(fd[1]);
                 continue;
             }
-            if (pid == 0) {
-                dup2(fd[0], STDIN_FILENO);
-                dup2(fd[1], STDOUT_FILENO);
+            if (pid == 0) {     // 子进程
+                dup2(fd[0], STDIN_FILENO);  // STDIN 重定向到 fd[0]
+                dup2(fd[1], STDOUT_FILENO); // STDOUT 重定向到 fd[1]
                 if (fd[0] != STDIN_FILENO) close(fd[0]);
                 if (fd[1] != STDOUT_FILENO) close(fd[1]);
-                exec(path, argv);
+                exec(path, argv);   // 按给定的参数执行
+
                 printf("[sh] exec failed\n");
                 exit(127);
             }
 
-            if (fd[0] != STDIN_FILENO) close(fd[0]);
-            if (fd[1] != STDOUT_FILENO) close(fd[1]);
+            if (fd[0] != STDIN_FILENO) close(fd[0]);    // 父进程中关闭执行当前命令时打开的外部输入文件
+            if (fd[1] != STDOUT_FILENO) close(fd[1]);   // 父进程中关闭执行当前命令时打开的外部输出文件
 
             int status = 0;
             if (wait(&status) < 0) {
