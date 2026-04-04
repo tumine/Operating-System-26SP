@@ -36,6 +36,7 @@ void fileclose(struct file *f);
 int filestat(struct file *f, uint64 addr);
 int fileread(struct file *f, uint64 addr, int n);
 int filewrite(struct file *f, uint64 addr, int n);
+int fileioctl(struct file *f, int cmd, uint64 arg);
 
 // core/pipe.c
 struct pipe;
@@ -63,6 +64,7 @@ int namecmp(const char *s, const char *t);
 struct inode *dirlookup(struct inode *dp, const char *name, uint *poff);
 int dirlink(struct inode *dp, const char *name, uint inum);
 void fs_read_file(const char *path);
+int getcwd_path(struct inode *cwd, char *buf, int max);
 
 // lib/printf.c
 void printfinit(void);
@@ -131,5 +133,10 @@ void binit(void);
 struct buf *bread(uint dev, uint blockno);
 void bwrite(struct buf *b);
 void brelse(struct buf *b);
+
+// drivers/gpu.c
+void gpuinit(void);
+void gpudev_mount(void);
+int gpu_ioctl(struct file *f, int cmd, uint64 arg);
 
 #endif

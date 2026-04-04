@@ -113,9 +113,10 @@ void fprintf(int fd, const char *fmt, ...) {
     va_end(ap);
 }
 
-void printf(const char *fmt, ...) {
+int printf(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vprintf(1, fmt, ap);
     va_end(ap);
+    return 0;
 }

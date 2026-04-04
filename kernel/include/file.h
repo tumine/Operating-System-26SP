@@ -14,6 +14,7 @@ enum filetype {
     FD_PIPE,
     FD_CONSOLE,
     FD_INODE,
+    FD_GPU,
 };
 
 struct pipe;
@@ -50,5 +51,6 @@ void fileclose(struct file *f);
 int filestat(struct file *f, uint64 addr);
 int fileread(struct file *f, uint64 addr, int n);
 int filewrite(struct file *f, uint64 addr, int n);
+int fileioctl(struct file *f, int cmd, uint64 arg);
 
 #endif

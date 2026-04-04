@@ -277,7 +277,7 @@ def main() -> int:
             raise FileNotFoundError(host)
         mk.add_host_file(rootino, target, host)
 
-    mk.add_text_file(rootino, "TEST.TXT", b"Hello from File System")
+    mk.add_text_file(rootino, "TEST.TXT", b"Hello from File System\n")
 
     mk.emit(args.image)
     print(

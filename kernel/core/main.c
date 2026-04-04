@@ -44,6 +44,10 @@ void main() {
         printf("[NexOS] Mounting filesystem...\n");       
         fsinit(0);
 
+        // 初始化并挂载模拟 GPU 字符设备到根目录
+        gpuinit();
+        gpudev_mount();
+
         fileinit();
         userinit();
         trap_init();

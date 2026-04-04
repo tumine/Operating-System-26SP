@@ -235,3 +235,18 @@ int filewrite(struct file *f, uint64 addr, int n) {
 
     return -1;
 }
+
+int fileioctl(struct file *f, int cmd, uint64 arg) {
+    if (f == 0) {
+        return -1;
+    }
+
+    switch (f->type) {
+    case FD_GPU:
+        return gpu_ioctl(f, cmd, arg);
+    default:
+        break;
+    }
+
+    return -1;
+}

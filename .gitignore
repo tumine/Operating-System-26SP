@@ -9,6 +9,8 @@ kernel.elf
 .cache
 compiler_commands.json
 fs.img
+__pycache__/
+*.pyc
 
 # Markdown PDF temp file
 *_tmp.html
