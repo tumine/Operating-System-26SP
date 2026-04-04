@@ -22,10 +22,14 @@
 #define SYS_mkdir 19
 #define SYS_unlink 20
 #define SYS_link 21
+
+// 保留 HEAD 的系统调用
 #define SYS_dup2 22
 #define SYS_getcwd 23
 #define SYS_ioctl 24
-
 #define SYS_hello_id 25
+
+// 添加 incoming 的系统调用
+#define SYS_time_us 26
 
 #endif

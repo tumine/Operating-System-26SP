@@ -287,7 +287,7 @@ static uint bmap(struct inode *ip, uint bn, int alloc) {
 
     bn -= NDIRECT;
     if (bn < NINDIRECT) {
-        uint indirect = ip->addrs[NDIRECT];
+        uint indirect = ip->addrs[SINDIRECT];
         if (indirect == 0) {
             if (!alloc) {
                 return 0;
@@ -296,7 +296,7 @@ static uint bmap(struct inode *ip, uint bn, int alloc) {
             if (indirect == 0) {
                 return 0;
             }
-            ip->addrs[NDIRECT] = indirect;
+            ip->addrs[SINDIRECT] = indirect;
         }
 
         struct buf *bp = bread(ip->dev, indirect);
@@ -315,7 +315,143 @@ static uint bmap(struct inode *ip, uint bn, int alloc) {
         return addr;
     }
 
+    bn -= NINDIRECT;
+    if (bn < NDINDIRECT) {
+        uint outer = ip->addrs[DINDIRECT];
+        if (outer == 0) {
+            if (!alloc) {
+                return 0;
+            }
+            outer = balloc(ip->dev);
+            if (outer == 0) {
+                return 0;
+            }
+            ip->addrs[DINDIRECT] = outer;
+        }
+
+        struct buf *bp1 = bread(ip->dev, outer);
+        uint *a1 = (uint *)bp1->data;
+        uint idx1 = bn / NINDIRECT;
+        uint idx2 = bn % NINDIRECT;
+        uint mid = a1[idx1];
+        if (mid == 0) {
+            if (!alloc) {
+                brelse(bp1);
+                return 0;
+            }
+            mid = balloc(ip->dev);
+            if (mid == 0) {
+                brelse(bp1);
+                return 0;
+            }
+            a1[idx1] = mid;
+            bwrite(bp1);
+        }
+        brelse(bp1);
+
+        struct buf *bp2 = bread(ip->dev, mid);
+        uint *a2 = (uint *)bp2->data;
+        uint addr = a2[idx2];
+        if (addr == 0 && alloc) {
+            addr = balloc(ip->dev);
+            if (addr != 0) {
+                a2[idx2] = addr;
+                bwrite(bp2);
+            }
+        }
+        brelse(bp2);
+        return addr;
+    }
+
+    bn -= NDINDIRECT;
+    if (bn < NTINDIRECT) {
+        uint top = ip->addrs[TINDIRECT];
+        if (top == 0) {
+            if (!alloc) {
+                return 0;
+            }
+            top = balloc(ip->dev);
+            if (top == 0) {
+                return 0;
+            }
+            ip->addrs[TINDIRECT] = top;
+        }
+
+        struct buf *bp1 = bread(ip->dev, top);
+        uint *a1 = (uint *)bp1->data;
+        uint idx1 = bn / NDINDIRECT;
+        uint rem = bn % NDINDIRECT;
+        uint idx2 = rem / NINDIRECT;
+        uint idx3 = rem % NINDIRECT;
+        uint mid1 = a1[idx1];
+        if (mid1 == 0) {
+            if (!alloc) {
+                brelse(bp1);
+                return 0;
+            }
+            mid1 = balloc(ip->dev);
+            if (mid1 == 0) {
+                brelse(bp1);
+                return 0;
+            }
+            a1[idx1] = mid1;
+            bwrite(bp1);
+        }
+        brelse(bp1);
+
+        struct buf *bp2 = bread(ip->dev, mid1);
+        uint *a2 = (uint *)bp2->data;
+        uint mid2 = a2[idx2];
+        if (mid2 == 0) {
+            if (!alloc) {
+                brelse(bp2);
+                return 0;
+            }
+            mid2 = balloc(ip->dev);
+            if (mid2 == 0) {
+                brelse(bp2);
+                return 0;
+            }
+            a2[idx2] = mid2;
+            bwrite(bp2);
+        }
+        brelse(bp2);
+
+        struct buf *bp3 = bread(ip->dev, mid2);
+        uint *a3 = (uint *)bp3->data;
+        uint addr = a3[idx3];
+        if (addr == 0 && alloc) {
+            addr = balloc(ip->dev);
+            if (addr != 0) {
+                a3[idx3] = addr;
+                bwrite(bp3);
+            }
+        }
+        brelse(bp3);
+        return addr;
+    }
+
     return 0;
+}
+
+static void free_indirect(uint dev, uint bno, int depth) {
+    if (bno == 0) {
+        return;
+    }
+    struct buf *bp = bread(dev, bno);
+    uint *a = (uint *)bp->data;
+    for (int i = 0; i < NINDIRECT; i++) {
+        if (a[i] == 0) {
+            continue;
+        }
+        if (depth == 1) {
+            bfree(dev, a[i]);
+        } else {
+            free_indirect(dev, a[i], depth - 1);
+        }
+    }
+    brelse(bp);
+    bfree(dev, bno);
 }
 
 void itrunc(struct inode *ip) {
@@ -331,17 +467,17 @@ void itrunc(struct inode *ip) {
         }
     }
 
-    if (ip->addrs[NDIRECT]) {
-        struct buf *bp = bread(ip->dev, ip->addrs[NDIRECT]);
-        uint *a = (uint *)bp->data;
-        for (int j = 0; j < NINDIRECT; j++) {
-            if (a[j]) {
-                bfree(ip->dev, a[j]);
-            }
-        }
-        brelse(bp);
-        bfree(ip->dev, ip->addrs[NDIRECT]);
-        ip->addrs[NDIRECT] = 0;
+    if (ip->addrs[SINDIRECT]) {
+        free_indirect(ip->dev, ip->addrs[SINDIRECT], 1);
+        ip->addrs[SINDIRECT] = 0;
+    }
+    if (ip->addrs[DINDIRECT]) {
+        free_indirect(ip->dev, ip->addrs[DINDIRECT], 2);
+        ip->addrs[DINDIRECT] = 0;
+    }
+    if (ip->addrs[TINDIRECT]) {
+        free_indirect(ip->dev, ip->addrs[TINDIRECT], 3);
+        ip->addrs[TINDIRECT] = 0;
     }
 
     ip->size = 0;
@@ -396,6 +532,66 @@ int readi(struct inode *ip, uint64 off, void *dst, uint n) {
         uint boff = (uint)((off + tot) % BSIZE);
         uint m = min_uint(n - tot, BSIZE - boff);
         memmove(p + tot, bp->data + boff, m);
+        brelse(bp);
+        tot += m;
+    }
+
+    if (need_unlock) {
+        iunlock(ip);
+    }
+    return (int)tot;
+}
+
+int readi_user(struct inode *ip, uint64 off, pagetable_t pagetable, uint64 dstva, uint n) {
+    if (ip == 0 || pagetable == 0) {
+        return -1;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    int need_unlock = inode_lock_if_needed(ip);
+
+    if (ip->type == 0) {
+        if (need_unlock) {
+            iunlock(ip);
+        }
+        return -1;
+    }
+
+    if (off > ip->size) {
+        if (need_unlock) {
+            iunlock(ip);
+        }
+        return 0;
+    }
+    if (off + n < off) {
+        if (need_unlock) {
+            iunlock(ip);
+        }
+        return -1;
+    }
+    if (off + n > ip->size) {
+        n = (uint)(ip->size - off);
+    }
+
+    uint tot = 0;
+    while (tot < n) {
+        uint bn = (uint)((off + tot) / BSIZE);
+        uint addr = bmap(ip, bn, 0);
+        if (addr == 0) {
+            break;
+        }
+
+        struct buf *bp = bread(ip->dev, addr);
+        uint boff = (uint)((off + tot) % BSIZE);
+        uint m = min_uint(n - tot, BSIZE - boff);
+        if (copyout(pagetable, dstva + (uint64)tot, (char *)bp->data + boff, (uint64)m) < 0) {
+            brelse(bp);
+            if (need_unlock) {
+                iunlock(ip);
+            }
+            return -1;
+        }
         brelse(bp);
         tot += m;
     }
@@ -635,111 +831,6 @@ struct inode *namei(const char *path) {
 
 struct inode *nameiparent(const char *path, char *name) {
     return namex(path, 1, name);
-}
-
-/* Find the name of inode ip in directory dp. Returns 0 on success, -1 on failure. */
-static int dirfindname(struct inode *dp, struct inode *ip, char *namebuf, int namecap) {
-    int need_unlock = inode_lock_if_needed(dp);
-    if (dp->type != T_DIR) {
-        if (need_unlock) {
-            iunlock(dp);
-        }
-        return -1;
-    }
-
-    struct dirent de;
-    for (uint off = 0; off + sizeof(de) <= dp->size; off += sizeof(de)) {
-        int n = readi(dp, off, &de, sizeof(de));
-        if (n != (int)sizeof(de)) {
-            if (need_unlock) {
-                iunlock(dp);
-            }
-            return -1;
-        }
-        if (de.inum == 0) {
-            continue;
-        }
-        if (de.inum == ip->inum && dp->dev == ip->dev) {
-            int len = DIRSIZ;
-            while (len > 0 && de.name[len - 1] == ' ') {
-                len--;
-            }
-            if (len >= namecap) {
-                len = namecap - 1;
-            }
-            memmove(namebuf, de.name, (uint)len);
-            namebuf[len] = '\0';
-            if (need_unlock) {
-                iunlock(dp);
-            }
-            return 0;
-        }
-    }
-
-    if (need_unlock) {
-        iunlock(dp);
-    }
-    return -1;
-}
-
-int getcwd_path(struct inode *cwd, char *buf, int max) {
-    if (cwd == 0 || buf == 0 || max < 2) {
-        return -1;
-    }
-
-    char path[MAXPATH];
-    path[0] = '\0';
-    int pathlen = 0;
-
-    struct inode *ip = idup(cwd);
-    if (ip == 0) {
-        return -1;
-    }
-
-    while (1) {
-        if (ip->inum == ROOTINO) {
-            if (pathlen + 2 > max) {
-                iput(ip);
-                return -1;
-            }
-            buf[0] = '/';
-            memmove(buf + 1, path, (uint)(pathlen + 1));
-            iput(ip);
-            return 0;
-        }
-
-        struct inode *parent = dirlookup(ip, "..", 0);
-        if (parent == 0) {
-            iput(ip);
-            return -1;
-        }
-
-        char name[DIRSIZ + 1];
-        if (dirfindname(parent, ip, name, sizeof(name)) < 0) {
-            iput(parent);
-            iput(ip);
-            return -1;
-        }
-
-        int namelen = 0;
-        while (name[namelen] != '\0') {
-            namelen++;
-        }
-
-        if (pathlen + namelen + 2 > MAXPATH) {
-            iput(parent);
-            iput(ip);
-            return -1;
-        }
-
-        memmove(path + namelen + 1, path, (uint)(pathlen + 1));
-        memmove(path, name, (uint)namelen);
-        path[namelen] = '/';
-        pathlen = namelen + 1 + pathlen;
-
-        iput(ip);
-        ip = parent;
-    }
 }
 
 void fs_read_file(const char *path) {

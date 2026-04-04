@@ -16,7 +16,7 @@ typedef unsigned int   uint32;
 typedef unsigned long  uint64;
 
 // 基础有符号类型
-typedef char           int8;
+typedef signed char    int8;
 typedef short          int16;
 typedef int            int32;
 typedef long           int64;

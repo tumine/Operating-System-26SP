@@ -12,7 +12,8 @@ KLD = $(K)/ld
 KFS = $(K)/fs
 
 CPUS ?= 4
-RAM ?= 128M
+RAM ?= 1536M
+LLM_CPUS := 1
 
 U = user
 UBUILD = $(BUILD)/user
@@ -55,15 +56,19 @@ QEMUOPTS = -machine virt \
 	-smp $(CPUS) \
 	-nographic \
 	-global virtio-mmio.force-legacy=false
+QEMUOPTS_LLM = -machine virt \
+	-bios none \
+	-kernel kernel.elf \
+	-m $(RAM) \
+	-smp $(LLM_CPUS) \
+	-nographic \
+	-global virtio-mmio.force-legacy=false
 QEMUFSOPTS = -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-device,drive=x0,bus=virtio-mmio-bus.0
 
 QEMUGDB = -S -gdb tcp::26000
 
-# Optional extra --add NAME=PATH arguments for mkxv6fs (e.g. lab test fixtures)
-FSIMG_EXTRA_ADD ?=
-
 # C flags
-CFLAGS = -Wall  -O -fno-omit-frame-pointer -ggdb
+CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
 CFLAGS += -mcmodel=medany -mno-relax
 CFLAGS += -ffreestanding -fno-common -nostdlib
 CFLAGS += -fno-pie -no-pie
@@ -74,15 +79,17 @@ CFLAGS += -I$(KINCLUDE)
 LOG_LEVEL ?= 3
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL)
 
-UCFLAGS = -Wall -O -fno-omit-frame-pointer -ggdb
+UCFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
 UCFLAGS += -mcmodel=medany -mno-relax
 UCFLAGS += -ffreestanding -fno-common -nostdlib
 UCFLAGS += -fno-pie -no-pie
 UCFLAGS += -MMD -MP
 UCFLAGS += -I$(KINCLUDE) -I$(U)
 ULDFLAGS = -Wl,--build-id=none
+LLMRUN_UCFLAGS = $(UCFLAGS) -O3 -funroll-loops
+LLMRUN_ULDFLAGS = $(ULDFLAGS) -Wl,-s
 
-LDFLAGS = -z max-page-size=4096 
+LDFLAGS = -z max-page-size=4096 --no-warn-rwx-segments
 COMDBDIR = $(BUILD)/compdb
 COMDB = $(BUILD)/compile_commands.json
 
@@ -113,7 +120,6 @@ SRCS = \
 	$(KCORE)/syscall.c \
 	$(KCORE)/pipe.c \
 	$(KCORE)/bio.c \
-	$(KDRV)/gpu.c \
 	$(KFS)/fs.c \
 
 KOBJS = $(patsubst %.c,$(BUILD)/%.o,$(filter %.c,$(SRCS)))
@@ -155,113 +161,3 @@ UPROGS = \
 	rs_status \
 	gpu_stats \
 	gpudemo 
-UCOMMON = \
-	$(UBUILD)/entry.o \
-	$(UBUILD)/syscall.o \
-	$(UBUILD)/ulib.o \
-	$(UBUILD)/printf.o
-UOBJS = $(UCOMMON) $(patsubst %,$(UBUILD)/%.o,$(UPROGS))
-UELFS = $(patsubst %,$(UBUILD)/%.elf,$(UPROGS))
-
-# Default target
-all: kernel.elf $(COMDB)
-
-# Build rules
-$(BUILD)/%.o: %.c
-	@mkdir -p $(@D) $(COMDBDIR)
-	COMPDB_DIR=$(COMDBDIR) COMPDB_FILE=$< $(CC) $(CFLAGS) -c -o $@ $<
-
-$(BUILD)/%.o: %.S
-	@mkdir -p $(@D) $(COMDBDIR)
-	COMPDB_DIR=$(COMDBDIR) COMPDB_FILE=$< $(CC) $(CFLAGS) -c -o $@ $<
-
-# Link kernel
-kernel.elf: $(KLD)/kernel.ld $(KOBJS) | $(COMDB)
-	$(LD) $(LDFLAGS) -T $(KLD)/kernel.ld -o $@ $(KOBJS)
-
-# ------------------------------------------------------------
-# User programs
-# ------------------------------------------------------------
-
-$(UBUILD)/%.o: $(U)/%.c
-	@mkdir -p $(@D)
-	$(REALCC) $(UCFLAGS) -c -o $@ $<
-
-$(UBUILD)/%.o: $(U)/%.S
-	@mkdir -p $(@D)
-	$(REALCC) $(UCFLAGS) -c -o $@ $<
-
-$(UBUILD)/%.elf: $(UCOMMON) $(UBUILD)/%.o $(U)/user.ld
-	$(REALCC) $(UCFLAGS) $(ULDFLAGS) -T $(U)/user.ld -o $@ $(UCOMMON) $(UBUILD)/$*.o
-
-# Run in QEMU
-qemu: kernel.elf $(COMDB) fsimg
-	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS)
-
-fs: kernel.elf $(COMDB) fsimg
-	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS)
-
-fsimg: $(UELFS) tools/mkfsimg.py
-	python3 tools/mkfsimg.py \
-		--image fs.img \
-		--size-blocks 65536 \
-		$(FSIMG_EXTRA_ADD) \
-		--add test.sh=user/test.sh \
-		--add init=$(UBUILD)/init.elf \
-		--add sh=$(UBUILD)/sh.elf \
-		--add hello=$(UBUILD)/hello.elf \
-		--add quiet=$(UBUILD)/quiet.elf \
-		--add stressio=$(UBUILD)/stressio.elf \
-		--add stsched=$(UBUILD)/stsched.elf \
-		--add stressdisk=$(UBUILD)/stressdisk.elf \
-		--add pid=$(UBUILD)/pid.elf \
-		--add uptime=$(UBUILD)/uptime.elf \
-		--add sleep=$(UBUILD)/sleep.elf \
-		--add killer=$(UBUILD)/killer.elf \
-		--add kill=$(UBUILD)/kill.elf \
-		--add pingpong=$(UBUILD)/pingpong.elf \
-		--add fstat=$(UBUILD)/fstat.elf \
-		--add forktest=$(UBUILD)/forktest.elf \
-		--add zombie=$(UBUILD)/zombie.elf \
-		--add echo=$(UBUILD)/echo.elf \
-		--add cat=$(UBUILD)/cat.elf \
-		--add wc=$(UBUILD)/wc.elf \
-		--add grep=$(UBUILD)/grep.elf \
-		--add ls=$(UBUILD)/ls.elf \
-		--add find=$(UBUILD)/find.elf \
-		--add xargs=$(UBUILD)/xargs.elf \
-		--add fstest=$(UBUILD)/fstest.elf \
-		--add mkdir=$(UBUILD)/mkdir.elf \
-		--add rm=$(UBUILD)/rm.elf \
-		--add ln=$(UBUILD)/ln.elf \
-		--add touch=$(UBUILD)/touch.elf \
-		--add logtest=$(UBUILD)/logtest.elf \
-		--add sid=$(UBUILD)/sid.elf \
-		--add test_hello_id=$(UBUILD)/test_hello_id.elf \
-		--add runscript=$(UBUILD)/runscript.elf \
-		--add rs_status=$(UBUILD)/rs_status.elf \
-		--add gpu_stats=$(UBUILD)/gpu_stats.elf \
-		--add gpudemo=$(UBUILD)/gpudemo.elf 
-
-qemu-gdb: kernel.elf $(COMDB) fsimg
-	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS) $(QEMUGDB)
-
-gdb: kernel.elf fsimg
-	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS) $(QEMUGDB) & \
-	$(GDB) kernel.elf -ex "target remote localhost:26000"
-
-kernel.asm: kernel.elf
-	$(OBJDUMP) -d kernel.elf > kernel.asm
-
-$(COMDB): $(KOBJS)
-	@mkdir -p $(BUILD)
-	@python3 tools/merge_compdb.py $(COMDBDIR) $(COMDB)
-
-compdb: $(COMDB)
-
-clean:
-	rm -rf $(BUILD) kernel.elf kernel.asm fs.img
-
-.PHONY: all qemu fs fsimg qemu-gdb gdb clean compdb
-
--include $(KOBJS:.o=.d) $(UOBJS:.o=.d)

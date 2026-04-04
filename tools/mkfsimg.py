@@ -9,17 +9,23 @@ import struct
 import sys
 from dataclasses import dataclass
 
-BSIZE = 512
+BSIZE = 16384
 FSMAGIC = 0x10203040
 ROOTINO = 1
 DIRSIZ = 14
 NDIRECT = 12
 NINDIRECT = BSIZE // 4
-MAXFILE = NDIRECT + NINDIRECT
+NDINDIRECT = NINDIRECT * NINDIRECT
+NTINDIRECT = NDINDIRECT * NINDIRECT
+SINDIRECT = NDIRECT
+DINDIRECT = NDIRECT + 1
+TINDIRECT = NDIRECT + 2
+NADDRS = NDIRECT + 3
+MAXFILE = NDIRECT + NINDIRECT + NDINDIRECT + NTINDIRECT
 T_DIR = 1
 T_FILE = 2
 
-DINODE_FMT = "<hhhhI13I"
+DINODE_FMT = "<hhhhI15I"
 DINODE_SIZE = struct.calcsize(DINODE_FMT)
 IPB = BSIZE // DINODE_SIZE
 BPB = BSIZE * 8
@@ -38,7 +44,7 @@ class Dinode:
 
     def __post_init__(self) -> None:
         if self.addrs is None:
-            self.addrs = [0] * (NDIRECT + 1)
+            self.addrs = [0] * NADDRS
 
 
 def pack_dinode(di: Dinode) -> bytes:
@@ -93,6 +99,8 @@ class Mkfs:
 
         self.freeblock = self.datastart
         self.next_inum = ROOTINO
+        self.rootino = 0
+        self.path_inums: dict[str, int] = {}
 
     def inode_pos(self, inum: int) -> int:
         if inum < 0 or inum >= self.ninodes:
@@ -156,16 +164,57 @@ class Mkfs:
                 if di.addrs[fbn] == 0:
                     di.addrs[fbn] = self.alloc_block()
                 bno = di.addrs[fbn]
-            else:
+            elif fbn < NDIRECT + NINDIRECT:
                 ind_idx = fbn - NDIRECT
-                if di.addrs[NDIRECT] == 0:
-                    di.addrs[NDIRECT] = self.alloc_block()
-                ibno = di.addrs[NDIRECT]
+                if di.addrs[SINDIRECT] == 0:
+                    di.addrs[SINDIRECT] = self.alloc_block()
+                ibno = di.addrs[SINDIRECT]
                 indirect = self.read_indirect(ibno)
                 if indirect[ind_idx] == 0:
                     indirect[ind_idx] = self.alloc_block()
                     self.write_indirect(ibno, indirect)
                 bno = indirect[ind_idx]
+            elif fbn < NDIRECT + NINDIRECT + NDINDIRECT:
+                rem = fbn - NDIRECT - NINDIRECT
+                i1 = rem // NINDIRECT
+                i2 = rem % NINDIRECT
+                if di.addrs[DINDIRECT] == 0:
+                    di.addrs[DINDIRECT] = self.alloc_block()
+                l1b = di.addrs[DINDIRECT]
+                l1 = self.read_indirect(l1b)
+                if l1[i1] == 0:
+                    l1[i1] = self.alloc_block()
+                    self.write_indirect(l1b, l1)
+                l2b = l1[i1]
+                l2 = self.read_indirect(l2b)
+                if l2[i2] == 0:
+                    l2[i2] = self.alloc_block()
+                    self.write_indirect(l2b, l2)
+                bno = l2[i2]
+            else:
+                rem = fbn - NDIRECT - NINDIRECT - NDINDIRECT
+                i1 = rem // NDINDIRECT
+                rem2 = rem % NDINDIRECT
+                i2 = rem2 // NINDIRECT
+                i3 = rem2 % NINDIRECT
+                if di.addrs[TINDIRECT] == 0:
+                    di.addrs[TINDIRECT] = self.alloc_block()
+                l1b = di.addrs[TINDIRECT]
+                l1 = self.read_indirect(l1b)
+                if l1[i1] == 0:
+                    l1[i1] = self.alloc_block()
+                    self.write_indirect(l1b, l1)
+                l2b = l1[i1]
+                l2 = self.read_indirect(l2b)
+                if l2[i2] == 0:
+                    l2[i2] = self.alloc_block()
+                    self.write_indirect(l2b, l2)
+                l3b = l2[i2]
+                l3 = self.read_indirect(l3b)
+                if l3[i3] == 0:
+                    l3[i3] = self.alloc_block()
+                    self.write_indirect(l3b, l3)
+                bno = l3[i3]
 
             n = min(len(data) - idx, BSIZE - (off % BSIZE))
             dst = bno * BSIZE + (off % BSIZE)
@@ -189,6 +238,38 @@ class Mkfs:
     def dirlink(self, dir_inum: int, child_inum: int, name: str) -> None:
         self.iappend(dir_inum, self.dirent_bytes(child_inum, name))
 
+    def ensure_dir(self, target_dir: str) -> int:
+        target_dir = target_dir.strip().strip("/")
+        if target_dir == "":
+            return self.rootino
+
+        cached = self.path_inums.get(target_dir)
+        if cached is not None:
+            return cached
+
+        if "/" in target_dir:
+            parent_dir, name = target_dir.rsplit("/", 1)
+        else:
+            parent_dir, name = "", target_dir
+        parent_inum = self.ensure_dir(parent_dir)
+
+        inum = self.alloc_inode(T_DIR)
+        di = self.read_dinode(inum)
+        di.nlink = 2
+        self.write_dinode(inum, di)
+
+        self.dirlink(inum, inum, ".")
+        self.dirlink(inum, parent_inum, "..")
+        self.dirlink(parent_inum, inum, name)
+
+        parent = self.read_dinode(parent_inum)
+        parent.nlink += 1
+        self.write_dinode(parent_inum, parent)
+
+        self.path_inums[target_dir] = inum
+        print(f"created dir {target_dir} (inode={inum})")
+        return inum
+
     def add_host_file(self, root_inum: int, target_name: str, host_path: str) -> None:
         with open(host_path, "rb") as f:
             data = f.read()
@@ -203,6 +284,17 @@ class Mkfs:
         self.iappend(inum, content)
         self.dirlink(root_inum, inum, target_name)
         print(f"packed inline -> {target_name} (inode={inum}, bytes={len(content)})")
+
+    def add_host_path(self, target_path: str, host_path: str) -> None:
+        target_path = target_path.strip().strip("/")
+        if not target_path:
+            raise ValueError("target file path is empty")
+        if "/" in target_path:
+            parent_dir, name = target_path.rsplit("/", 1)
+        else:
+            parent_dir, name = "", target_path
+        dir_inum = self.ensure_dir(parent_dir)
+        self.add_host_file(dir_inum, name, host_path)
 
     def write_superblock(self) -> None:
         sb = struct.pack(
@@ -249,13 +341,45 @@ def parse_add(spec: str) -> tuple[str, str]:
     return name, path
 
 
+def parse_add_dir(spec: str) -> list[tuple[str, str]]:
+    target_prefix = ""
+    dir_path = spec
+    if "=" in spec:
+        target_prefix, dir_path = spec.split("=", 1)
+        target_prefix = target_prefix.strip().strip("/")
+    dir_path = dir_path.strip()
+
+    adds: list[tuple[str, str]] = []
+    for root, dirs, files in os.walk(dir_path):
+        dirs.sort()
+        files.sort()
+        rel = os.path.relpath(root, dir_path)
+        if rel == ".":
+            rel = ""
+        else:
+            rel = rel.replace(os.sep, "/")
+        for entry in files:
+            host = os.path.join(root, entry)
+            parts = [target_prefix, rel, entry]
+            target = "/".join(part for part in parts if part)
+            adds.append((target, host))
+    return adds
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build filesystem image")
     ap.add_argument("--image", required=True, help="output image path")
-    ap.add_argument("--size-blocks", type=int, default=65536, help="filesystem size in 512-byte blocks")
+    ap.add_argument("--size-blocks", type=int, default=2048, help="filesystem size in filesystem blocks")
     ap.add_argument("--ninodes", type=int, default=1024, help="inode count")
     ap.add_argument("--nlog", type=int, default=0, help="log block count")
     ap.add_argument("--add", action="append", default=[], metavar="NAME=HOST_PATH", help="pack host file as NAME")
+    ap.add_argument(
+        "--add-dir",
+        action="append",
+        default=[],
+        metavar="[TARGET=]DIR",
+        help="pack all regular files from DIR, optionally under TARGET/",
+    )
     args = ap.parse_args()
 
     mk = Mkfs(size_blocks=args.size_blocks, ninodes=args.ninodes, nlog=args.nlog)
@@ -263,6 +387,8 @@ def main() -> int:
     rootino = mk.alloc_inode(T_DIR)
     if rootino != ROOTINO:
         raise ValueError("root inode allocation mismatch")
+    mk.rootino = rootino
+    mk.path_inums[""] = rootino
 
     root = mk.read_dinode(rootino)
     root.nlink = 2
@@ -271,13 +397,16 @@ def main() -> int:
     mk.dirlink(rootino, rootino, ".")
     mk.dirlink(rootino, rootino, "..")
 
-    for spec in args.add:
-        target, host = parse_add(spec)
+    adds = [parse_add(spec) for spec in args.add]
+    for dir_path in args.add_dir:
+        adds.extend(parse_add_dir(dir_path))
+
+    for target, host in adds:
         if not os.path.exists(host):
             raise FileNotFoundError(host)
-        mk.add_host_file(rootino, target, host)
+        mk.add_host_path(target, host)
 
-    mk.add_text_file(rootino, "TEST.TXT", b"Hello from File System\n")
+    mk.add_text_file(rootino, "TEST.TXT", b"Hello from File System")
 
     mk.emit(args.image)
     print(

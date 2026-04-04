@@ -53,6 +53,10 @@ int ticks_sleep(uint n) {
     return 0;
 }
 
+uint64 time_us_get(void) {
+    return r_time() / (TIMEBASE_HZ / 1000000L);
+}
+
 void trap_init(void) {
     if (cpuid() == 0) {
         static int once = 0;
@@ -63,6 +67,7 @@ void trap_init(void) {
         }
     }
     w_stvec((uint64)kernelvec);
+    w_scounteren(COUNTEREN_CY | COUNTEREN_TM | COUNTEREN_IR);
     clearsip_ssip();
     LOG_INFO("trap_init done on hart %d", cpuid());
     // Don't enable interrupts here; let the scheduler do it.
@@ -150,6 +155,8 @@ void usertrapret(void) {
     uint64 x = r_sstatus();
     x &= ~SSTATUS_SPP;   // clear SPP to return to U-mode
     x |= SSTATUS_SPIE;   // enable interrupts in U-mode
+    x &= ~SSTATUS_FS_MASK;
+    x |= SSTATUS_FS_DIRTY;
     w_sstatus(x);
 
     w_sepc(p->trapframe->epc);

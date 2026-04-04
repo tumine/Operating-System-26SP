@@ -6,7 +6,7 @@
 #define NCPU 8
 
 // User stack pages.
-#define USERSTACK 1
+#define USERSTACK 8
 
 // Max number of exec arguments.
 #define MAXARG 32

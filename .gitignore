@@ -6,11 +6,15 @@ PPTs
 docs
 .cache
 kernel.elf
-.cache
 compiler_commands.json
 fs.img
 __pycache__/
 *.pyc
+premodels
+origin-models
+tools/export_qwen.py
+tools/export_smollm.py
+tools/__pycache__
 
 # Markdown PDF temp file
 *_tmp.html

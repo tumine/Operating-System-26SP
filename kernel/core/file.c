@@ -143,30 +143,11 @@ int fileread(struct file *f, uint64 addr, int n) {
         if (p == 0 || p->pagetable == 0) {
             return -1;
         }
-
-        int tot = 0;
-        char buf[BSIZE];
-
-        while (tot < n) {
-            int m = min_int(n - tot, BSIZE);
-            int r = readi(f->ip, f->off, buf, (uint)m);
-            if (r < 0) {
-                return tot > 0 ? tot : -1;
-            }
-            if (r == 0) {
-                break;
-            }
-            if (copyout(p->pagetable, addr + (uint64)tot, buf, (uint64)r) < 0) {
-                return -1;
-            }
+        int r = readi_user(f->ip, f->off, p->pagetable, addr, (uint)n);
+        if (r > 0) {
             f->off += (uint)r;
-            tot += r;
-            if (r < m) {
-                break;
-            }
         }
-
-        return tot;
+        return r;
     }
 
     return -1;
@@ -206,17 +187,25 @@ int filewrite(struct file *f, uint64 addr, int n) {
             return -1;
         }
 
-        int tot = 0;
-        char buf[BSIZE];
+        char stackbuf[PGSIZE];
+        char *buf = stackbuf;
+        int chunk_cap = PGSIZE;
 
+        int tot = 0;
         while (tot < n) {
-            int m = min_int(n - tot, BSIZE);
+            int m = min_int(n - tot, chunk_cap);
             if (copyin(p->pagetable, buf, addr + (uint64)tot, (uint64)m) < 0) {
+                if (buf != stackbuf) {
+                    kfree(buf);
+                }
                 return tot > 0 ? tot : -1;
             }
 
             int w = writei(f->ip, f->off, buf, (uint)m);
             if (w < 0) {
+                if (buf != stackbuf) {
+                    kfree(buf);
+                }
                 return tot > 0 ? tot : -1;
             }
             if (w == 0) {
@@ -230,22 +219,10 @@ int filewrite(struct file *f, uint64 addr, int n) {
             }
         }
 
+        if (buf != stackbuf) {
+            kfree(buf);
+        }
         return tot;
-    }
-
-    return -1;
-}
-
-int fileioctl(struct file *f, int cmd, uint64 arg) {
-    if (f == 0) {
-        return -1;
-    }
-
-    switch (f->type) {
-    case FD_GPU:
-        return gpu_ioctl(f, cmd, arg);
-    default:
-        break;
     }
 
     return -1;
