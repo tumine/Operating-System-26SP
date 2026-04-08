@@ -371,6 +371,8 @@ static void llm_runtime_init(struct llm_runtime *rt, uint32 required_model_kind,
 
     rt->seq = (uint32 *)xmalloc(sizeof(uint32) * (uint64)rt->cfg.runtime_seq_len);
     memset(rt->seq, 0, sizeof(uint32) * (uint64)rt->cfg.runtime_seq_len);
+
+    
 }
 
 static void __attribute__((unused)) llm_alloc_kv_caches(const struct model_cfg *cfg, float **kcache_out, float **vcache_out) {
@@ -521,34 +523,34 @@ static int llm_drive_decode(
 ) {
     int total_steps = token_count + predict_count - 1;
     int start_tick = uptime();
+    uint64_t tpot_total = 0;    // TPOT 累时
+    uint64_t tpot_count = 0;
 
     LLM_LOG("starting forward pass\n");
-    // Hint for students:
-    // - A natural request-level timing start point is right before this loop.
-    // - If you measure TTFT with timer_start()/timer_end(), record the start
-    //   timestamp once before the first token_forward() call below.
+    uint64_t ttft_start = timer_start();    // TTFT 计时起点
     for (int pos = 0; pos < total_steps; pos++) {
-        // Hint for students:
-        // - For per-step latency, take a step start timestamp immediately
-        //   before token_forward().
-        // - The matching step end timestamp is immediately after it returns.
+        uint64_t step_start = timer_start();    // 单步 token 生成计时起点
         int next = token_forward(rt, kcache, vcache, linear_conv_cache, linear_state_cache, pos, ws);
+        uint64_t step_end = timer_end();        // 单步 token 生成计时终点
         if (next < 0) {
             return -1;
         }
         if (pos >= token_count - 1) {
             int gen_idx = pos - (token_count - 1);
             rt->seq[token_count + gen_idx] = (uint32)next;
+            if (gen_idx == 0) {     // 第一个生成的 token
+                uint64_t ttft_end = timer_end();    // TTFT 计时终点
+                LLM_LOG("TTFT=%lld\n", ttft_end);
+            }
+            else {                  // 后续 token
+                tpot_total += step_end - step_start;
+                tpot_count++;
+            }
             LLM_LOG("gen[%d] token=%d\n", gen_idx, next);
-            // Hint for students:
-            // - When gen_idx == 0, "next" is the first generated token.
-            //   This branch is a natural TTFT stop point.
-            // - When gen_idx > 0, this iteration is a natural TPOT sample.
-            //   If you want steady-state TPOT, average those later generated
-            //   token iterations and exclude gen_idx == 0 from the TPOT average.
         }
     }
-    LLM_LOG("tick_span=%d\n", uptime() - start_tick);
+    double tpot = (double)tpot_total / tpot_count; // 根据 TPOT 累时计算 TPOT
+    LLM_LOG("tick_span=%d, TPOT=%lf\n", uptime() - start_tick, tpot);
     return 0;
 }
 
