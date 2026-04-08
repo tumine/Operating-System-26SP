@@ -637,6 +637,111 @@ struct inode *nameiparent(const char *path, char *name) {
     return namex(path, 1, name);
 }
 
+/* Find the name of inode ip in directory dp. Returns 0 on success, -1 on failure. */
+static int dirfindname(struct inode *dp, struct inode *ip, char *namebuf, int namecap) {
+    int need_unlock = inode_lock_if_needed(dp);
+    if (dp->type != T_DIR) {
+        if (need_unlock) {
+            iunlock(dp);
+        }
+        return -1;
+    }
+
+    struct dirent de;
+    for (uint off = 0; off + sizeof(de) <= dp->size; off += sizeof(de)) {
+        int n = readi(dp, off, &de, sizeof(de));
+        if (n != (int)sizeof(de)) {
+            if (need_unlock) {
+                iunlock(dp);
+            }
+            return -1;
+        }
+        if (de.inum == 0) {
+            continue;
+        }
+        if (de.inum == ip->inum && dp->dev == ip->dev) {
+            int len = DIRSIZ;
+            while (len > 0 && de.name[len - 1] == ' ') {
+                len--;
+            }
+            if (len >= namecap) {
+                len = namecap - 1;
+            }
+            memmove(namebuf, de.name, (uint)len);
+            namebuf[len] = '\0';
+            if (need_unlock) {
+                iunlock(dp);
+            }
+            return 0;
+        }
+    }
+
+    if (need_unlock) {
+        iunlock(dp);
+    }
+    return -1;
+}
+
+int getcwd_path(struct inode *cwd, char *buf, int max) {
+    if (cwd == 0 || buf == 0 || max < 2) {
+        return -1;
+    }
+
+    char path[MAXPATH];
+    path[0] = '\0';
+    int pathlen = 0;
+
+    struct inode *ip = idup(cwd);
+    if (ip == 0) {
+        return -1;
+    }
+
+    while (1) {
+        if (ip->inum == ROOTINO) {
+            if (pathlen + 2 > max) {
+                iput(ip);
+                return -1;
+            }
+            buf[0] = '/';
+            memmove(buf + 1, path, (uint)(pathlen + 1));
+            iput(ip);
+            return 0;
+        }
+
+        struct inode *parent = dirlookup(ip, "..", 0);
+        if (parent == 0) {
+            iput(ip);
+            return -1;
+        }
+
+        char name[DIRSIZ + 1];
+        if (dirfindname(parent, ip, name, sizeof(name)) < 0) {
+            iput(parent);
+            iput(ip);
+            return -1;
+        }
+
+        int namelen = 0;
+        while (name[namelen] != '\0') {
+            namelen++;
+        }
+
+        if (pathlen + namelen + 2 > MAXPATH) {
+            iput(parent);
+            iput(ip);
+            return -1;
+        }
+
+        memmove(path + namelen + 1, path, (uint)(pathlen + 1));
+        memmove(path, name, (uint)namelen);
+        path[namelen] = '/';
+        pathlen = namelen + 1 + pathlen;
+
+        iput(ip);
+        ip = parent;
+    }
+}
+
 void fs_read_file(const char *path) {
     if (path == 0) {
         return;

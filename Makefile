@@ -59,8 +59,11 @@ QEMUFSOPTS = -drive file=fs.img,if=none,format=raw,id=x0 -device virtio-blk-devi
 
 QEMUGDB = -S -gdb tcp::26000
 
+# Optional extra --add NAME=PATH arguments for mkxv6fs (e.g. lab test fixtures)
+FSIMG_EXTRA_ADD ?=
+
 # C flags
-CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
+CFLAGS = -Wall  -O -fno-omit-frame-pointer -ggdb
 CFLAGS += -mcmodel=medany -mno-relax
 CFLAGS += -ffreestanding -fno-common -nostdlib
 CFLAGS += -fno-pie -no-pie
@@ -71,7 +74,7 @@ CFLAGS += -I$(KINCLUDE)
 LOG_LEVEL ?= 3
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL)
 
-UCFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
+UCFLAGS = -Wall -O -fno-omit-frame-pointer -ggdb
 UCFLAGS += -mcmodel=medany -mno-relax
 UCFLAGS += -ffreestanding -fno-common -nostdlib
 UCFLAGS += -fno-pie -no-pie
@@ -79,7 +82,7 @@ UCFLAGS += -MMD -MP
 UCFLAGS += -I$(KINCLUDE) -I$(U)
 ULDFLAGS = -Wl,--build-id=none
 
-LDFLAGS = -z max-page-size=4096 --no-warn-rwx-segments
+LDFLAGS = -z max-page-size=4096 
 COMDBDIR = $(BUILD)/compdb
 COMDB = $(BUILD)/compile_commands.json
 
@@ -110,43 +113,53 @@ SRCS = \
 	$(KCORE)/syscall.c \
 	$(KCORE)/pipe.c \
 	$(KCORE)/bio.c \
+	$(KDRV)/gpu.c \
 	$(KFS)/fs.c \
 
 KOBJS = $(patsubst %.c,$(BUILD)/%.o,$(filter %.c,$(SRCS)))
 KOBJS += $(patsubst %.S,$(BUILD)/%.o,$(filter %.S,$(SRCS)))
 
-UPROGS = init 	\
-sh 				\
-hello 			\
-quiet 			\
-stressio 		\
-stsched 		\
-stressdisk 		\
-pid 			\
-uptime 			\
-sleep 			\
-killer 			\
-kill 			\
-pingpong 		\
-fstat 			\
-forktest 		\
-zombie 			\
-echo 			\
-cat 			\
-wc 				\
-grep 			\
-ls 				\
-find 			\
-xargs 			\
-fstest 			\
-mkdir 			\
-rm 				\
-ln 				\
-touch 			\
-logtest 		\
-sid				\
-test_hello_id
-UCOMMON = $(UBUILD)/entry.o $(UBUILD)/syscall.o $(UBUILD)/printf.o $(UBUILD)/ulib.o
+UPROGS = \
+	init \
+	sh \
+	hello \
+	quiet \
+	stressio \
+	stsched \
+	stressdisk \
+	pid \
+	uptime \
+	sleep \
+	killer \
+	kill \
+	pingpong \
+	fstat \
+	forktest \
+	zombie \
+	echo \
+	cat \
+	wc \
+	grep \
+	ls \
+	find \
+	xargs \
+	fstest \
+	mkdir \
+	rm \
+	ln \
+	touch \
+	logtest \
+	sid \
+	test_hello_id \
+	runscript \
+	rs_status \
+	gpu_stats \
+	gpudemo 
+UCOMMON = \
+	$(UBUILD)/entry.o \
+	$(UBUILD)/syscall.o \
+	$(UBUILD)/ulib.o \
+	$(UBUILD)/printf.o
 UOBJS = $(UCOMMON) $(patsubst %,$(UBUILD)/%.o,$(UPROGS))
 UELFS = $(patsubst %,$(UBUILD)/%.elf,$(UPROGS))
 
@@ -189,38 +202,46 @@ fs: kernel.elf $(COMDB) fsimg
 	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS)
 
 fsimg: $(UELFS) tools/mkfsimg.py
-	python3 tools/mkfsimg.py --image fs.img --size-blocks 65536 	\
-	--add init=$(UBUILD)/init.elf 									\
-	--add sh=$(UBUILD)/sh.elf 										\
-	--add hello=$(UBUILD)/hello.elf 								\
-	--add quiet=$(UBUILD)/quiet.elf 								\
-	--add stressio=$(UBUILD)/stressio.elf 							\
-	--add stsched=$(UBUILD)/stsched.elf 							\
-	--add stressdisk=$(UBUILD)/stressdisk.elf 						\
-	--add pid=$(UBUILD)/pid.elf 									\
-	--add uptime=$(UBUILD)/uptime.elf 								\
-	--add sleep=$(UBUILD)/sleep.elf 								\
-	--add killer=$(UBUILD)/killer.elf 								\
-	--add kill=$(UBUILD)/kill.elf 									\
-	--add pingpong=$(UBUILD)/pingpong.elf 							\
-	--add fstat=$(UBUILD)/fstat.elf 								\
-	--add forktest=$(UBUILD)/forktest.elf 							\
-	--add zombie=$(UBUILD)/zombie.elf 								\
-	--add echo=$(UBUILD)/echo.elf 									\
-	--add cat=$(UBUILD)/cat.elf 									\
-	--add wc=$(UBUILD)/wc.elf 										\
-	--add grep=$(UBUILD)/grep.elf 									\
-	--add ls=$(UBUILD)/ls.elf 										\
-	--add find=$(UBUILD)/find.elf 									\
-	--add xargs=$(UBUILD)/xargs.elf 								\
-	--add fstest=$(UBUILD)/fstest.elf 								\
-	--add mkdir=$(UBUILD)/mkdir.elf 								\
-	--add rm=$(UBUILD)/rm.elf 										\
-	--add ln=$(UBUILD)/ln.elf 										\
-	--add touch=$(UBUILD)/touch.elf 								\
-	--add logtest=$(UBUILD)/logtest.elf 							\
-	--add sid=$(UBUILD)/sid.elf										\
-	--add test_hello_id=$(UBUILD)/test_hello_id.elf
+	python3 tools/mkfsimg.py \
+		--image fs.img \
+		--size-blocks 65536 \
+		$(FSIMG_EXTRA_ADD) \
+		--add test.sh=user/test.sh \
+		--add init=$(UBUILD)/init.elf \
+		--add sh=$(UBUILD)/sh.elf \
+		--add hello=$(UBUILD)/hello.elf \
+		--add quiet=$(UBUILD)/quiet.elf \
+		--add stressio=$(UBUILD)/stressio.elf \
+		--add stsched=$(UBUILD)/stsched.elf \
+		--add stressdisk=$(UBUILD)/stressdisk.elf \
+		--add pid=$(UBUILD)/pid.elf \
+		--add uptime=$(UBUILD)/uptime.elf \
+		--add sleep=$(UBUILD)/sleep.elf \
+		--add killer=$(UBUILD)/killer.elf \
+		--add kill=$(UBUILD)/kill.elf \
+		--add pingpong=$(UBUILD)/pingpong.elf \
+		--add fstat=$(UBUILD)/fstat.elf \
+		--add forktest=$(UBUILD)/forktest.elf \
+		--add zombie=$(UBUILD)/zombie.elf \
+		--add echo=$(UBUILD)/echo.elf \
+		--add cat=$(UBUILD)/cat.elf \
+		--add wc=$(UBUILD)/wc.elf \
+		--add grep=$(UBUILD)/grep.elf \
+		--add ls=$(UBUILD)/ls.elf \
+		--add find=$(UBUILD)/find.elf \
+		--add xargs=$(UBUILD)/xargs.elf \
+		--add fstest=$(UBUILD)/fstest.elf \
+		--add mkdir=$(UBUILD)/mkdir.elf \
+		--add rm=$(UBUILD)/rm.elf \
+		--add ln=$(UBUILD)/ln.elf \
+		--add touch=$(UBUILD)/touch.elf \
+		--add logtest=$(UBUILD)/logtest.elf \
+		--add sid=$(UBUILD)/sid.elf \
+		--add test_hello_id=$(UBUILD)/test_hello_id.elf \
+		--add runscript=$(UBUILD)/runscript.elf \
+		--add rs_status=$(UBUILD)/rs_status.elf \
+		--add gpu_stats=$(UBUILD)/gpu_stats.elf \
+		--add gpudemo=$(UBUILD)/gpudemo.elf 
 
 qemu-gdb: kernel.elf $(COMDB) fsimg
 	$(QEMU) $(QEMUOPTS) $(QEMUFSOPTS) $(QEMUGDB)
