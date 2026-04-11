@@ -50,7 +50,7 @@ static int parse_predict_arg(const char *text) {
 }
 
 static void session_init(struct llm_session *sess, const char *asset_dir) {
-    int ModelLoadingStart = timer_start();
+    int SmolModelLoadingStart = timer_start();
     memset(sess, 0, sizeof(*sess));
     if (chdir(asset_dir) < 0) {
         LLM_ERR("failed to chdir to %s\n", asset_dir);
@@ -61,8 +61,8 @@ static void session_init(struct llm_session *sess, const char *asset_dir) {
     sess->kv_cache_elems = llm_kv_cache_elems(&sess->rt.cfg);
     llm_alloc_kv_caches(&sess->rt.cfg, &sess->kcache, &sess->vcache);
     llm_workspace_init_full(&sess->rt.cfg, &sess->ws);
-    int ModelLoadingEnd = timer_end();
-    LLM_LOG("Model Loading Time: %d\n", ModelLoadingEnd - ModelLoadingStart);
+    int SmolModelLoadingEnd = timer_end();
+    LLM_LOG("Smol Model Loading Time: %d\n", SmolModelLoadingEnd - SmolModelLoadingStart);
 }
 
 static void parse_cli_tokens(int argc, char *argv[], int argi, struct llm_request *req, int predict_count) {
