@@ -50,12 +50,8 @@ static int parse_predict_arg(const char *text) {
 }
 
 static void session_init(struct llm_session *sess, const char *asset_dir) {
+    int ModelLoadingStart = timer_start();
     memset(sess, 0, sizeof(*sess));
-    // Hint for students:
-    // - If you want end-to-end startup/load time for this program, take the
-    //   start timestamp at the beginning of session_init().
-    // - A natural end timestamp is after llm_runtime_init() and the cache /
-    //   workspace allocations below, when sess is fully ready to serve decode.
     if (chdir(asset_dir) < 0) {
         LLM_ERR("failed to chdir to %s\n", asset_dir);
         exit(1);
@@ -65,7 +61,8 @@ static void session_init(struct llm_session *sess, const char *asset_dir) {
     sess->kv_cache_elems = llm_kv_cache_elems(&sess->rt.cfg);
     llm_alloc_kv_caches(&sess->rt.cfg, &sess->kcache, &sess->vcache);
     llm_workspace_init_full(&sess->rt.cfg, &sess->ws);
-    // Hint for students: this is a natural stop point for end-to-end load time.
+    int ModelLoadingEnd = timer_end();
+    LLM_LOG("Model Loading Time: %d\n", ModelLoadingEnd - ModelLoadingStart);
 }
 
 static void parse_cli_tokens(int argc, char *argv[], int argi, struct llm_request *req, int predict_count) {
