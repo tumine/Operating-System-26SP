@@ -1,7 +1,7 @@
 #include "user.h"
 
 #define MAXLINE 128
-#define MAXARGS 16
+#define MAXARGS 32
 
 static int isspace1(char c) {
     return c == ' ' || c == '\t';
