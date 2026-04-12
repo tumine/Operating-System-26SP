@@ -318,6 +318,8 @@ static void proc_freepagetable(pagetable_t pagetable, uint64 sz) {
     uvmfree(pagetable, sz);
 }
 
+// 把 p 指向的 proc 结构体进程槽变为空闲状态，可被重用
+// 同时清空所有与此前进程相关的信息为缺省状态
 static void freeproc(struct proc *p) {
     if (p->pagetable) {
         proc_freepagetable(p->pagetable, p->sz);
@@ -719,7 +721,7 @@ int fork(void) {
 }
 
 int wait(uint64 addr) {
-    struct proc *p = myproc();
+    struct proc *p = myproc();  // 取当前进程
     if (p == 0) {
         return -1;
     }
@@ -730,14 +732,14 @@ int wait(uint64 addr) {
 
         for (int i = 0; i < NPROC; i++) {
             struct proc *pp = &procs[i];
-            if (pp->parent != p) {
+            if (pp->parent != p) {  // 首先需要判断进程的从属关系，只能对隶属于当前进程的子进程进行 wait
                 continue;
             }
 
             havekids = 1;
             acquire(&pp->lock);
             if (pp->state == ZOMBIE) {
-                int pid = pp->pid;
+                int pid = pp->pid;  // 预先保存子进程的 PID 信息
                 int status = pp->xstate;
 
                 if (addr != 0 && copyout(p->pagetable, addr, (char *)&status, sizeof(status)) < 0) {
@@ -746,7 +748,7 @@ int wait(uint64 addr) {
                     return -1;
                 }
 
-                freeproc(pp);
+                freeproc(pp);   // 销毁子进程的 PCB 块
                 release(&pp->lock);
                 release(&wait_lock);
                 return pid;
