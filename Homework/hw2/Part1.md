@@ -169,14 +169,47 @@
   - 大模型的**固定开销**（权重加载、框架调度等）更大，但**计算效率**（矩阵乘法等）相比小模型有所优化
 
 2. `Qwen3.5-0.8B` 和 `SmolLM2-135M` 的部分关键维度差异
-| 关键维度 | Qwen3.5-0.8B | SmolLM2-135M |
-|:--------:|:------------:|:------------:|
-| 模型整体参数量 | ~800M | ~135M |
-| Transformer 层数 | 24 | 30 |
-| 隐藏层维度 | 1024 | 576 |
-| MLP 中间维度 | 3584 | 1536 |
-| 注意力头数 | 8 | 9 |
-| 词表大小 | ~248k | 49152 |
+<table>
+  <thead>
+    <tr>
+      <th>关键维度</th>
+      <th>Qwen3.5-0.8B</th>
+      <th>SmolLM2-135M</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td align="center">模型整体参数量</td>
+      <td align="center">~800M</td>
+      <td align="center">~135M</td>
+    </tr>
+    <tr>
+      <td align="center">Transformer 层数</td>
+      <td align="center">24</td>
+      <td align="center">30</td>
+    </tr>
+    <tr>
+      <td align="center">隐藏层维度</td>
+      <td align="center">1024</td>
+      <td align="center">576</td>
+    </tr>
+    <tr>
+      <td align="center">MLP 中间维度</td>
+      <td align="center">3584</td>
+      <td align="center">1536</td>
+    </tr>
+    <tr>
+      <td align="center">注意力头数</td>
+      <td align="center">8</td>
+      <td align="center">9</td>
+    </tr>
+    <tr>
+      <td align="center">词表大小</td>
+      <td align="center">~248k</td>
+      <td align="center">49152</td>
+    </tr>
+  </tbody>
+</table>
 
 - `Model Loading Time` 的影响因素：总参数量
   - `Qwen3.5-0.8B` 的权重是 `SmolLM2-135M` 的约 5.9 倍，即两种模型加载时权重文件**向内存写入的总字节数存在 5.9 倍的关系**
