@@ -32,7 +32,8 @@ struct ai_request {
 struct ai_service {
     struct spinlock lock;           // 服务锁
     int next_id;                    // 下一个请求将被分配的请求编号
-    int worker_pid;                 // worker 进程 pid，用于在必要时发送唤醒信号
+    int worker_pid;                 // worker 进程 pid，
+                                    // 用于在一些只有 worker 可调用的函数中对调用进程进行身份校验
     int worker_online;              // worker 在线标记，指示当前是否有可用的 worker 进程在线
     int q[AI_NREQ];                 // 请求队列，保存槽位下标
     int qhead;                      // 队头
@@ -311,22 +312,80 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
 
     acquire(&aisvc.lock);
 
-    /*
-     * TODO(Part1):
-     * 1. Check that the caller is the registered ai_daemon worker.
-     * 2. Sleep while the request queue is empty.
-     * 3. Pop one slot index from the circular queue.
-     * 4. Mark that request RUNNING.
-     * 5. Copy req->tokens, req->token_count, req->predict_count, req->id
-     *    into local kernel buffers before releasing the lock.
-     * 6. Handle token_cap being too small.
-     * 7. copyout the token array, reqid, and predict_count to user space.
-     * 8. If any copyout fails, transition the request to FAILED and wake waiters.
-     * 9. Return token_count on success.
-     */
+    // 执行进程身份校验
+    if (p->pid != aisvc.worker_pid) {
+        // 函数的调用进程不是 worker，身份校验失败
+        release(&aisvc.lock);
+        return -1;
+    }
 
+    // 循环队列为空，worker 进入睡眠
+    while (aisvc.qcount == 0) {
+        sleep(&aisvc.qcount, &aisvc.lock);  // worker 以 aisvc.qcount 为等待标识符进行等待
+    }
+
+    // 从循环队列中取出队首请求
+    int slot = aisvc.q[aisvc.qhead];
+    aisvc.qhead = (aisvc.qhead + 1) % AI_NREQ;
+    aisvc.qcount--;
+    wakeup(&aisvc.qcount);                  // 唤醒希望提交请求的进程
+
+    struct ai_request *req = &aisvc.reqs[slot];
+    req->state = AIREQ_RUNNING;             // 标记队首请求正在被处理
+
+    // 将请求的详细信息复制到本地内核缓冲区
+    // 包括请求的传入 token 数，输出 token 数，请求 id，具体的传入 token 数组
+    int token_count = req->token_count;
+    int predict_count = req->predict_count;
+    int reqid = req->id;
+    uint32 tokens[AI_MAX_TOKENS];
+    memmove(tokens, req->tokens, (uint64)token_count * sizeof(uint32));
+
+    // 检查给定的用户缓冲区大小是否充足
+    if (token_count > token_cap) {
+        // 如果给定的用户态缓冲区过小，就执行报错返回
+        req->state = AIREQ_FAILED;
+        release(&aisvc.lock);
+        return -1;
+    }
+    
     release(&aisvc.lock);
-    return -1;
+
+    // 数据的复制过程较为耗时，且调用 copyout 过程可能触发缺页异常导致进程睡眠，
+    // 此时不能持有 aisvc.lock，否则会引发死锁或内核 panic
+
+    // 将 token 数组复制到用户空间
+    if (copyout(p->pagetable, token_uva, (char *)tokens, (uint64)copy_count * sizeof(uint32)) < 0) {
+        // 复制失败，更新请求状态并唤醒请求的父进程
+        acquire(&aisvc.lock);
+        req->state = AIREQ_FAILED;
+        req->err = -1;
+        wakeup(req);                // 唤醒请求的父进程
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    // 将 reqid 复制到用户空间
+    if (copyout(p->pagetable, reqid_uva, (char *)&reqid, sizeof(reqid)) < 0) {
+        acquire(&aisvc.lock);
+        req->state = AIREQ_FAILED;
+        req->err = -1;
+        wakeup(req);
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    // 将 predict_count 复制到用户空间
+    if (copyout(p->pagetable, predict_uva, (char *)&predict_count, sizeof(predict_count)) < 0) {
+        acquire(&aisvc.lock);
+        req->state = AIREQ_FAILED;
+        req->err = -1;
+        wakeup(req);
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    return token_count;
 }
 
 int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int status) {
