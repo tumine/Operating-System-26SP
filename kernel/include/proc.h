@@ -119,11 +119,13 @@ struct proc {
     struct spinlock lock;
     int pid;
     enum procstate state;
-    void *chan;            // if non-zero, sleeping on chan
-    int killed;            // if non-zero, have been killed
-    int xstate;            // exit status to be returned to parent's wait
-    struct proc *parent;   // parent process
-    struct inode *cwd;     // current working directory
+    void *chan;             // chan 是一个等待标识符（指向某个变量）
+                            // sleep/wakeup 使用这个等待标识符来匹配需要唤醒哪些进程
+                            // 如果本字段非零，代表当前进程正在睡眠，并以 chan 作为唤醒标识符
+    int killed;             // if non-zero, have been killed
+    int xstate;             // exit status to be returned to parent's wait
+    struct proc *parent;    // parent process
+    struct inode *cwd;      // current working directory
     struct file *ofile[NOFILE]; // open files
     struct context context;
     void (*start)(void);

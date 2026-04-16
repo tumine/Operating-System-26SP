@@ -3,7 +3,7 @@
 #include "proc.h"
 #include "spinlock.h"
 
-#define AI_NREQ 8
+#define AI_NREQ 8           // 最大可用请求槽数量
 #define AI_MAX_TOKENS 255
 #define AI_MAX_PREDICT 32
 #define AI_MAX_RESULT 255
@@ -89,6 +89,7 @@ static __attribute__((unused)) int ai_req_busy(const struct ai_request *req) {
     return req->state == AIREQ_NEW || req->state == AIREQ_READY || req->state == AIREQ_RUNNING;
 }
 
+// 尝试找到一个可用请求槽并将其返回
 static __attribute__((unused)) struct ai_request *ai_find_slot_locked(void) {
     for (int i = 0; i < AI_NREQ; i++) {
         if (aisvc.reqs[i].state == AIREQ_UNUSED) {
@@ -239,23 +240,43 @@ static int ai_service_enqueue_tokens(uint64 token_uva, int token_count, int pred
 
     acquire(&aisvc.lock);
 
-    /*
-     * TODO(Part1):
-     * 1. Reject the submission if no ai_daemon worker has registered yet.
-     * 2. Sleep until ai_find_slot_locked() finds a free request slot.
-     * 3. Initialize a fresh request object:
-     *      - id / owner_pid
-     *      - token_count / predict_count
-     *      - err / result_len
-     *      - tokens[] contents
-     *      - state transition NEW -> READY
-     * 4. Push the request's slot index into the circular queue.
-     * 5. Wake the worker sleeping on qcount and return the reqid.
-     */
+    if (!aisvc.worker_online) {
+        // worker 离线，无法处理请求
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    // 等待一个可用请求槽以存入当前请求
+    struct ai_request *req;
+    while ((req = ai_find_slot_locked()) == 0) {
+        sleep(&aisvc.qcount, &aisvc.lock);      // 进程以 aisvc.qcount 作为等待标识符进行等待
+        // 可能有多个请求同时等待请求槽，因此在需要提交请求的进程被唤醒后，
+        // 需要再通过 while 循环条件尝试是否可锁定一个可用请求槽
+    }
+
+    // 成功获取到一个可用请求槽，向请求槽中写入请求的相关信息
+    req->id = aisvc.next_id++;                  // 赋予 reqid
+    req->owner_pid = p->pid;                    // 确定请求和父进程的从属关系
+    req->token_count = token_count;
+    req->predict_count = predict_count;
+    req->err = 0;                               // 初始化错误码
+    req->result_len = 0;                        // 初始化输出结果长度
+    memmove(req->tokens, tokens, (uint64)token_count * sizeof(uint32));
+                                                // 将请求的输入 tokens 复制到请求槽中
+    req->state = AIREQ_READY;                   // 设置请求槽已准备好被处理
+
+    // 将请求信息转移到请求槽中后，将该请求送入待处理请求的循环队列
+    int slot = (int)(req - aisvc.reqs);
+    aisvc.q[aisvc.qtail] = slot;
+    aisvc.qtail = (aisvc.qtail + 1) % AI_NREQ;
+    aisvc.qcount++;
+
+    wakeup(&aisvc.qcount);                      // 唤醒所有以 aisvc.qcount 作为等待标识符的进程，
+                                                // 包括没有请求可供处理时的休眠 worker 进程
+    *reqid_out = req->id;                       // 将请求在请求槽中的下标返回给父进程
 
     release(&aisvc.lock);
-    (void)reqid_out;
-    return -1;
+    return 0;
 }
 
 int ai_service_worker_register(void) {

@@ -722,8 +722,8 @@ void sleep(void *chan, struct spinlock *lk) {
 
     // Must acquire p->lock in order to change p->state and then call sched().
     // Once we hold p->lock, we can release lk so that the sleeper can be woken up.
-    acquire(&p->lock);
-    release(lk);
+    acquire(&p->lock);  // 对进程上锁
+    release(lk);        // 释放传入的共享锁，避免睡眠的进程仍然无效锁住资源
 
     p->chan = chan;
     p->state = SLEEPING;
