@@ -233,6 +233,7 @@ static int ai_service_enqueue_tokens(uint64 token_uva, int token_count, int pred
         return -1;
     }
 
+    // 先将用户态数据复制到内核缓冲区
     uint32 tokens[AI_MAX_TOKENS];
     memset(tokens, 0, sizeof(tokens));
     if (copyin(p->pagetable, (char *)tokens, token_uva, (uint64)token_count * sizeof(uint32)) < 0) {
@@ -399,26 +400,76 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
 
     acquire(&aisvc.lock);
 
-    /*
-     * TODO(Part1):
-     * 1. Check that the caller is the registered ai_daemon worker.
-     * 2. Find the request by reqid and make sure it is RUNNING.
-     * 3. If status == 0, copy the generated text from out_uva into result[].
-     * 4. Re-check the request after reacquiring the lock.
-     * 5. On success:
-     *      - set err = 0
-     *      - set result_len
-     *      - copy result[] into req->result
-     *      - move state to DONE
-     * 6. On failure:
-     *      - set err to a negative value
-     *      - clear result_len
-     *      - move state to FAILED
-     * 7. Wake up any process sleeping in ai_wait().
-     */
+    // 执行进程身份校验
+    if (p->pid != aisvc.worker_pid) {
+        // 函数的调用进程不是 worker，身份校验失败
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    // 根据 reqid 找到请求，确认请求状态
+    struct ai_request *req = ai_find_req_by_id_locked(reqid);
+    if (req == 0 || req->state != AIREQ_RUNNING) {
+        // 未找到请求，或请求不处在 RUNNING 状态
+        release(&aisvc.lock);
+        return -1;
+    }
 
     release(&aisvc.lock);
-    return -1;
+
+    // 离开临界区，将进行 copyin 操作，因此需要先释放锁
+
+    // 如果状态为成功（status == 0），从用户空间复制生成的文本
+    if (status == 0 && out_len > 0) {
+        if (out_len > AI_MAX_RESULT) {
+            // 生成长度过长，强制截断
+            out_len = AI_MAX_RESULT;
+        }
+        if (copyin(p->pagetable, result, out_uva, out_len) < 0) {
+            // 复制失败，需要重新获取锁并更新状态
+            acquire(&aisvc.lock);
+            // 二次上锁后，原 req 指针应被认为失效，需要重新根据 reqid 查找对应的请求槽
+            struct ai_request *req_retry = ai_find_req_by_id_locked(reqid);
+            if (req_retry != 0 && req_retry->state == AIREQ_RUNNING) {
+                req_retry->state = AIREQ_FAILED;
+                req_retry->err = -1;
+                req_retry->result_len = 0;
+                wakeup(req_retry);
+            }
+            release(&aisvc.lock);
+            return -1;
+        }
+    }
+
+    // 重新上锁并更新请求槽中的请求状态
+    acquire(&aisvc.lock);
+
+    // 重新根据 reqid 查找对应的请求槽
+    req = ai_find_req_by_id_locked(reqid);
+    if (req == 0 || req->state != AIREQ_RUNNING) {
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    if (status == 0) {
+        // 状态为成功
+        req->state = AIREQ_DONE;
+        req->err = 0;
+        req->result_len = out_len;
+        memmove(req->result, result, out_len + 1);      // 把请求的结果复制到请求槽中
+    }
+    else {
+        // 状态为失败
+        req->state = AIREQ_FAILED;
+        req->err = -1;
+        req->result_len = 0;
+    }
+
+    // 唤醒请求的父进程
+    wakeup(req);
+
+    release(&aisvc.lock);
+    return 0;
 }
 
 void ai_service_proc_exit(int pid) {
