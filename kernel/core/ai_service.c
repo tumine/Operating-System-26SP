@@ -265,15 +265,20 @@ int ai_service_worker_register(void) {
     }
 
     acquire(&aisvc.lock);
+    
+    // 检查 worker 是否在线
+    if (aisvc.worker_online) {
+        // 如果已经有在线的 worker 进程，就中断当前进程的 worker 注册流程
+        release(&aisvc.lock);
+        return -1;
+    }
 
-    /*
-     * TODO(Part1):
-     * Register the calling process as the unique ai_daemon worker.
-     * Reject the call if some other worker is already online.
-     */
+    // 注册当前进程为 worker，并标记 worker 上线
+    aisvc.worker_pid = p->pid;
+    aisvc.worker_online = 1;
 
     release(&aisvc.lock);
-    return -1;
+    return 0;               // 当前进程成功注册为 worker，返回 0
 }
 
 int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uint64 predict_uva) {
