@@ -31,13 +31,13 @@ struct ai_request {
 
 struct ai_service {
     struct spinlock lock;           // 服务锁
-    int next_id;                    // 下一个请求编号
-    int worker_pid;                 // worker pid
-    int worker_online;              // worker 在线标记
+    int next_id;                    // 下一个请求将被分配的请求编号
+    int worker_pid;                 // worker 进程 pid，用于在必要时发送唤醒信号
+    int worker_online;              // worker 在线标记，指示当前是否有可用的 worker 进程在线
     int q[AI_NREQ];                 // 请求队列，保存槽位下标
     int qhead;                      // 队头
     int qtail;                      // 队尾
-    int qcount;                     // 队列长度
+    int qcount;                     // 队列长度，当队列长度为 0 时 worker 睡眠；当队列满时用户进程阻塞
     struct ai_request reqs[AI_NREQ]; // 请求表
 } aisvc;
 
