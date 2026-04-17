@@ -112,10 +112,14 @@ static __attribute__((unused)) struct ai_request *ai_find_req_locked(int reqid, 
          * Only return the request when owner_pid matches req->owner_pid.
          * This is the core ownership check used by query()/wait().
          */
-        (void)owner_pid;
+        // 已确定 req->id == reqid，校验请求-进程从属关系
+        if (req->owner_pid != owner_pid) {
+            // 当前请求的父进程不是调用进程，校验失败
+            return NULL;
+        }
         return req;
     }
-    return 0;
+    return NULL;
 }
 
 static __attribute__((unused)) struct ai_request *ai_find_req_by_id_locked(int reqid) {
@@ -356,7 +360,7 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
     // 此时不能持有 aisvc.lock，否则会引发死锁或内核 panic
 
     // 将 token 数组复制到用户空间
-    if (copyout(p->pagetable, token_uva, (char *)tokens, (uint64)copy_count * sizeof(uint32)) < 0) {
+    if (copyout(p->pagetable, token_uva, (char *)tokens, (uint64)token_count * sizeof(uint32)) < 0) {
         // 复制失败，更新请求状态并唤醒请求的父进程
         acquire(&aisvc.lock);
         req->state = AIREQ_FAILED;
@@ -519,8 +523,31 @@ int ai_service_query(int reqid, uint64 st_uva) {
      * 3. Fill a struct ai_status with reqid/state/err/result_len.
      * 4. copyout that status structure to st_uva.
      */
-    (void)st_uva;
-    return -1;
+    // 涉及到对共享对象 aisvc 的操作，需要先上锁
+    acquire(&aisvc.lock);
+    
+    struct ai_request *req = ai_find_req_locked(reqid, p->pid);
+    if (!req) {
+        // 请求-进程关系校验失败或请求不存在
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    struct ai_status st = {
+        .reqid = req->id,
+        .state = req->state,
+        .err = req->err,
+        .result_len = req->result_len
+    };
+
+    release(&aisvc.lock);
+
+    // 将请求信息复制到用户态
+    if (copyout(p->pagetable, st_uva, (char *)&st, sizeof(st)) < 0) {
+        return -1;
+    }
+
+    return 0;
 }
 
 int ai_service_wait(int reqid, uint64 out_uva, int out_cap) {
@@ -529,18 +556,50 @@ int ai_service_wait(int reqid, uint64 out_uva, int out_cap) {
         return -1;
     }
 
-    /*
-     * TODO(Part2):
-     * 1. Find the request with ai_find_req_locked(reqid, p->pid).
-     * 2. Sleep while ai_req_busy(req) is true.
-     * 3. Reject failed requests cleanly.
-     * 4. On success, copy req->result into a temporary kernel buffer.
-     * 5. copyout that result to out_uva and return req->result_len.
-     * 6. Recycle the request slot back to UNUSED after one successful wait.
-     * 7. Make a second wait on the same reqid fail instead of returning stale data.
-     */
-    (void)out_uva;
-    return -1;
+    // 涉及到对共享对象 aisvc 的操作，需要先上锁
+    acquire(&aisvc.lock);
+    
+    struct ai_request *req = ai_find_req_locked(reqid, p->pid);
+    if (!req) {
+        // 请求-进程关系校验失败或请求不存在
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    // 等待 req 完成请求执行
+    while (ai_req_busy(req)) {
+        sleep(req, &aisvc.lock);    // 以当前 req 作为等待标识符，等待请求处理完成
+    }
+
+    // 检查请求状态
+    if (req->state == AIREQ_FAILED) {
+        // 请求失败，返回错误，不回收槽位
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    if (req->state != AIREQ_DONE) {
+        // 请求并未处在 DONE 状态
+        release(&aisvc.lock);
+        return -1;
+    }
+
+    // 请求处在 DONE 状态，取请求结果
+    char result[AI_MAX_RESULT + 1];
+    int result_len = req->result_len;
+    memmove(result, req->result, result_len + 1);
+
+    // 成功取回结果后，回收请求槽
+    ai_req_reset(req);
+
+    release(&aisvc.lock);
+
+    // 将取出的请求结果复制到用户空间
+    if (copyout(p->pagetable, out_uva, result, (uint64)result_len + 1) < 0) {
+        return -1;
+    }
+
+    return result_len;
 }
 
 int ai_service_call(uint64 token_uva, int token_count, int predict_count, uint64 out_uva, int out_cap) {
