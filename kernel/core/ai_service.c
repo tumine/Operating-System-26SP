@@ -310,7 +310,8 @@ int ai_service_worker_register(void) {
 
 int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uint64 predict_uva) {
     struct proc *p = myproc();
-    if (p == 0 || p->pagetable == 0 || token_cap <= 0 || token_cap > AI_MAX_TOKENS ||
+    if (p == 0 || p->pagetable == 0 || token_uva == 0 || 
+        token_cap <= 0 || token_cap > AI_MAX_TOKENS || 
         reqid_uva == 0 || predict_uva == 0) {
         return -1;
     }
@@ -350,6 +351,8 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
     if (token_count > token_cap) {
         // 如果给定的用户态缓冲区过小，就执行报错返回
         req->state = AIREQ_FAILED;
+        req->err = -1;
+        wakeup(req);                // 唤醒请求的父进程
         release(&aisvc.lock);
         return -1;
     }
@@ -395,7 +398,7 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
 
 int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int status) {
     struct proc *p = myproc();
-    if (p == 0 || p->pagetable == 0 || reqid <= 0) {
+    if (p == 0 || p->pagetable == 0 || reqid <= 0 || out_len < 0) {
         return -1;
     }
 
