@@ -576,7 +576,9 @@ int ai_service_wait(int reqid, uint64 out_uva, int out_cap) {
 
     // 检查请求状态
     if (req->state == AIREQ_FAILED) {
-        // 请求失败，返回错误，不回收槽位
+        // 请求失败，回收槽位后返回错误
+        ai_req_reset(req);
+        wakeup(&aisvc.qcount);  // 唤醒等待空闲槽位的进程
         release(&aisvc.lock);
         return -1;
     }
@@ -594,6 +596,7 @@ int ai_service_wait(int reqid, uint64 out_uva, int out_cap) {
 
     // 成功取回结果后，回收请求槽
     ai_req_reset(req);
+    wakeup(&aisvc.qcount);  // 唤醒等待空闲槽位的进程
 
     release(&aisvc.lock);
 
