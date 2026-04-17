@@ -394,7 +394,7 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
 
 int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int status) {
     struct proc *p = myproc();
-    if (p == 0 || p->pagetable == 0 || reqid <= 0 || out_len < 0) {
+    if (p == 0 || p->pagetable == 0 || reqid <= 0 || out_uva == 0 || out_len < 0) {
         return -1;
     }
 
@@ -424,12 +424,9 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
 
     // 如果状态为成功（status == 0），从用户空间复制生成的文本
     if (status == 0 && out_len > 0) {
-        if (out_len > AI_MAX_RESULT) {
-            // 生成长度过长，强制截断
-            out_len = AI_MAX_RESULT;
-        }
-        if (copyin(p->pagetable, result, out_uva, out_len) < 0) {
-            // 复制失败，需要重新获取锁并更新状态
+
+        if (out_len > AI_MAX_RESULT || copyin(p->pagetable, result, out_uva, out_len) < 0) {
+            // 生成长度过长或实际复制失败，需要重新获取锁并更新状态
             acquire(&aisvc.lock);
             // 二次上锁后，原 req 指针应被认为失效，需要重新根据 reqid 查找对应的请求槽
             struct ai_request *req_retry = ai_find_req_by_id_locked(reqid);
