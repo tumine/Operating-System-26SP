@@ -359,6 +359,7 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
     // 此时不能持有 aisvc.lock，否则会引发死锁或内核 panic
 
     // 将 token 数组复制到用户空间
+    // 使用 char* 强制类型转换，确保指针逐字节变化，能逐字节复制数据
     if (copyout(p->pagetable, token_uva, (char *)tokens, (uint64)token_count * sizeof(uint32)) < 0) {
         // 复制失败，更新请求状态并唤醒请求的父进程
         acquire(&aisvc.lock);
@@ -424,13 +425,27 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
 
     // 如果状态为成功（status == 0），从用户空间复制生成的文本
     if (status == 0 && out_len > 0) {
-
-        if (out_len > AI_MAX_RESULT || copyin(p->pagetable, result, out_uva, out_len) < 0) {
-            // 生成长度过长或实际复制失败，需要重新获取锁并更新状态
+        if (out_len > AI_MAX_RESULT) {
+            // 生成长度过长，需要重新获取锁并更新状态为 FAILED
             acquire(&aisvc.lock);
             // 二次上锁后，原 req 指针应被认为失效，需要重新根据 reqid 查找对应的请求槽
             struct ai_request *req_retry = ai_find_req_by_id_locked(reqid);
-            if (req_retry != 0 && req_retry->state == AIREQ_RUNNING) {
+            if (req_retry != NULL && req_retry->state == AIREQ_RUNNING) {
+                req_retry->state = AIREQ_FAILED;
+                req_retry->err = -1;
+                req_retry->result_len = 0;
+                wakeup(req_retry);
+            }
+            release(&aisvc.lock);
+            return -1;
+        }
+
+        // 尝试从用户空间复制结果
+        if (copyin(p->pagetable, result, out_uva, out_len) < 0) {
+            // 复制失败（非法用户指针）
+            acquire(&aisvc.lock);
+            struct ai_request *req_retry = ai_find_req_by_id_locked(reqid);
+            if (req_retry != NULL && req_retry->state == AIREQ_RUNNING) {
                 req_retry->state = AIREQ_FAILED;
                 req_retry->err = -1;
                 req_retry->result_len = 0;
