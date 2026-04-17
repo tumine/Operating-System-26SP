@@ -107,11 +107,6 @@ static __attribute__((unused)) struct ai_request *ai_find_req_locked(int reqid, 
             continue;
         }
 
-        /*
-         * TODO(Part2):
-         * Only return the request when owner_pid matches req->owner_pid.
-         * This is the core ownership check used by query()/wait().
-         */
         // 已确定 req->id == reqid，校验请求-进程从属关系
         if (req->owner_pid != owner_pid) {
             // 当前请求的父进程不是调用进程，校验失败
@@ -293,14 +288,15 @@ int ai_service_worker_register(void) {
 
     acquire(&aisvc.lock);
     
-    // 检查 worker 是否在线
-    if (aisvc.worker_online) {
-        // 如果已经有在线的 worker 进程，就中断当前进程的 worker 注册流程
+    // 检查 worker 是否已经注册
+    if (aisvc.worker_online && aisvc.worker_pid != p->pid) {
+        // 如果 worker 已经注册，并且不是当前进程，就中断注册流程
         release(&aisvc.lock);
         return -1;
     }
 
     // 注册当前进程为 worker，并标记 worker 上线
+    // 兼容同一个进程重复注册 worker 的边界情况
     aisvc.worker_pid = p->pid;
     aisvc.worker_online = 1;
 
@@ -519,13 +515,6 @@ int ai_service_query(int reqid, uint64 st_uva) {
         return -1;
     }
 
-    /*
-     * TODO(Part2):
-     * 1. Find the request with ai_find_req_locked(reqid, p->pid).
-     * 2. Refuse to expose status for a request owned by someone else.
-     * 3. Fill a struct ai_status with reqid/state/err/result_len.
-     * 4. copyout that status structure to st_uva.
-     */
     // 涉及到对共享对象 aisvc 的操作，需要先上锁
     acquire(&aisvc.lock);
     
