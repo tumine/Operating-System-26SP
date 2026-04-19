@@ -395,7 +395,7 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
 
 int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int status) {
     struct proc *p = myproc();
-    if (p == 0 || p->pagetable == 0 || reqid <= 0 || out_uva == 0 || out_len < 0) {
+    if (p == 0 || p->pagetable == 0 || reqid <= 0 || out_uva == 0 || out_len <= 0) {
         return -1;
     }
 
@@ -436,9 +436,6 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
                 req_retry->result_len = 0;
                 wakeup(req_retry);
             }
-            // 唤醒请求的父进程
-            wakeup(req);
-
             release(&aisvc.lock);
             return -1;
         }
@@ -454,9 +451,6 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
                 req_retry->result_len = 0;
                 wakeup(req_retry);
             }
-            // 唤醒请求的父进程
-            wakeup(req);
-
             release(&aisvc.lock);
             return -1;
         }
@@ -467,7 +461,7 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
 
     // 重新根据 reqid 查找对应的请求槽
     req = ai_find_req_by_id_locked(reqid);
-    if (req == 0 || req->state != AIREQ_RUNNING) {
+    if (req == NULL || req->state != AIREQ_RUNNING) {
         release(&aisvc.lock);
         return -1;
     }
