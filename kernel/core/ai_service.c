@@ -413,7 +413,7 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
 
     // 根据 reqid 找到请求，确认请求状态
     struct ai_request *req = ai_find_req_by_id_locked(reqid);
-    if (req == 0 || req->state != AIREQ_RUNNING) {
+    if (req == NULL || req->state != AIREQ_RUNNING) {
         // 未找到请求，或请求不处在 RUNNING 状态
         release(&aisvc.lock);
         return -1;
@@ -436,11 +436,14 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
                 req_retry->result_len = 0;
                 wakeup(req_retry);
             }
+            // 唤醒请求的父进程
+            wakeup(req);
+
             release(&aisvc.lock);
             return -1;
         }
 
-        // 尝试从用户空间复制结果
+        // 尝试从用户空间复制结果到内核缓冲区
         if (copyin(p->pagetable, result, out_uva, out_len) < 0) {
             // 复制失败（非法用户指针）
             acquire(&aisvc.lock);
@@ -451,6 +454,9 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
                 req_retry->result_len = 0;
                 wakeup(req_retry);
             }
+            // 唤醒请求的父进程
+            wakeup(req);
+
             release(&aisvc.lock);
             return -1;
         }
@@ -472,19 +478,23 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
         req->err = 0;
         req->result_len = out_len;
         memmove(req->result, result, out_len + 1);      // 把请求的结果复制到请求槽中
+        // 唤醒请求的父进程
+        wakeup(req);
+
+        release(&aisvc.lock);
+        return 0;
     }
     else {
         // 状态为失败
         req->state = AIREQ_FAILED;
         req->err = -1;
         req->result_len = 0;
+        // 唤醒请求的父进程
+        wakeup(req);
+
+        release(&aisvc.lock);
+        return -1;
     }
-
-    // 唤醒请求的父进程
-    wakeup(req);
-
-    release(&aisvc.lock);
-    return 0;
 }
 
 void ai_service_proc_exit(int pid) {
