@@ -54,6 +54,7 @@ static uint64 qwen_linear_state_elems(const struct model_cfg *cfg) {
            (uint64)cfg->linear_key_head_dim * (uint64)cfg->linear_value_head_dim;
 }
 
+// 将 dr->rt.prompt[i] 依次拷贝到 dr->rt.seq[i]
 static void copy_prompt_to_seq(struct daemon_runtime *dr) {
     for (int i = 0; i < dr->rt.prompt_n; i++) {
         dr->rt.seq[i] = dr->rt.prompt[i];
@@ -66,21 +67,34 @@ static int prefix_cache_plan_copy(
     uint64 *layer_span_out,
     uint64 *prefix_elems_out
 ) {
-    /*
-     * BONUS_TODO(1/4): 计算 prefix KV 拷贝的布局信息。
-     * 1. 把 prefix_len 约束到 [0, cfg->runtime_seq_len]。
-     * 2. 计算单个位置的 KV 元素数 elems_per_pos = n_kv_heads * head_dim。
-     * 3. 计算每层 cache 的跨度 layer_span = runtime_seq_len * elems_per_pos。
-     * 4. 计算要复制的 prefix 元素数 prefix_elems = prefix_len * elems_per_pos。
-     * 5. 通过 out 指针把 layer_span / prefix_elems 返回，并返回修正后的 prefix_len。
-     */
-    (void)cfg;
-    (void)prefix_len;
-    (void)layer_span_out;
-    (void)prefix_elems_out;
-    return 0;
+    
+    // prefix_len 下限约束
+    if (prefix_len < 0) {
+        prefix_len = 0;
+    }
+    // prefix_len 上限约束
+    if (prefix_len > cfg->runtime_seq_len) {
+        prefix_len = cfg->runtime_seq_len;
+    }
+
+    // 计算单个位置的 KV 元素数
+    uint64 elems_per_pos = (uint64)cfg->n_kv_heads * (uint64)cfg->head_dim;
+    // 计算单层 cache 跨度
+    uint64 layer_span = (uint64)cfg->runtime_seq_len * elems_per_pos;
+    // 计算要复制的 prefix 元素数
+    uint64 prefix_elems = (uint64)prefix_len * elems_per_pos;
+
+    // 返回 layer_span 和 prefix_elems
+    if (layer_span_out != 0) {
+        *layer_span_out = layer_span;
+    }
+    if (prefix_elems_out != 0) {
+        *prefix_elems_out = prefix_elems;
+    }
+    return prefix_len;
 }
 
+// 把 src 中保存的 prefix slice 复制到 dst 中
 static void __attribute__((unused))
 prefix_cache_copy_prefix_slice(float *dst, const float *src, const struct model_cfg *cfg, int prefix_len) {
     uint64 layer_span = 0;
@@ -93,17 +107,14 @@ prefix_cache_copy_prefix_slice(float *dst, const float *src, const struct model_
         return;
     }
 
-    /*
-     * BONUS_TODO(2/4): 按层复制 prefix 对应的 KV slice。
-     * 对每一层：
-     * - 用 layer_span 找到这一层在大 cache 里的起点；
-     * - 只复制 prefix_elems 个 float；
-     * - 不要把整层 runtime_seq_len 都复制过去。
-     */
-    (void)layer_span;
-    (void)prefix_elems;
+    for (int layer_count = 0; layer_count < cfg->n_layers; layer_count++) {
+        float *dst_layer = dst + (uint64)layer_count * layer_span;              // 定位到复制目标中本层起点
+        const float *src_layer = src + (uint64)layer_count * layer_span;        // 定位到复制源中本层起点
+        memcpy(dst_layer, src_layer, (uint64)(prefix_elems * sizeof(float)));   // 复制前 prefix_elems 个 float 字节数据
+    }
 }
 
+// 基于配置文件 cfg，将 cache 中 start_pos 及其之后的元素清零
 static void __attribute__((unused)) clear_kv_cache_from(float *cache, const struct model_cfg *cfg, int start_pos) {
     if (cache == 0) {
         return;
@@ -207,45 +218,47 @@ static int prefix_cache_should_bypass(struct daemon_runtime *dr, int token_count
 
 static int prefix_cache_try_restore(struct daemon_runtime *dr, int token_count, int *resume_pos_out) {
     struct daemon_prefix_cache *pc = &dr->prefix_cache;
+    // 当前 prompt 与缓存前缀连续相同的 token 数量
     int matched = prefix_cache_prefix_match_len(pc, dr->model_kind, dr->rt.prompt, token_count);
+    // 在处理当前 prompt 时，可以复用的缓存长度
+    // 初始置为 matched
     int reuse_len = matched;
 
-    if (resume_pos_out != 0) {
+    if (resume_pos_out != NULL) {
+        // 缺省重置开始继续解码的位置为 0，如果缓存命中会重新设置该字段
         *resume_pos_out = 0;
     }
     if (reuse_len > token_count - 1) {
+        // 缓存最多只保存到 prompt_n - 1，对于超出的 token 不再进行复用
         reuse_len = token_count - 1;
     }
     if (reuse_len <= 0) {
+        // 记录一次缓存未命中
         pc->misses++;
         return 0;
     }
 
-    /*
-     * BONUS_TODO(3/4): 真正恢复 prefix 对应的运行时状态。
-     * 你需要：
-     * 1. 先把 prompt token 拷回 dr->rt.seq，保证后续 decode 从正确上下文继续。
-     * 2. 把 cached_kcache / cached_vcache 的 prefix slice 恢复到 dr->kcache / dr->vcache。
-     * 3. 把 reuse_len 之后的尾部 cache 清零，避免上一次请求残留状态污染这次推理。
-     * 4. 设置 *resume_pos_out = reuse_len，并返回 reuse_len。
-     *
-     * 建议优先复用上面的 prefix_cache_copy_prefix_slice() 和 clear_kv_cache_from()。
-     */
-    (void)dr;
-    (void)resume_pos_out;
+    copy_prompt_to_seq(dr);     // 把 dr->rt.prompt 拷回 dr->rt.seq
 
-    /*
-     * 当前 start code 故意不执行真正的恢复逻辑；
-     * 即使检测到可复用前缀，也会安全回退到冷启动路径。
-     */
-    pc->misses++;
-    return 0;
+    // 恢复 KV Cache
+    prefix_cache_copy_prefix_slice(dr->kcache, pc->cached_kcache, &dr->rt.cfg, reuse_len);
+    prefix_cache_copy_prefix_slice(dr->vcache, pc->cached_vcache, &dr->rt.cfg, reuse_len);
+
+    // 将 KV Cache 中 reuse_len 以后的内容清空
+    clear_kv_cache_from(dr->kcache, &dr->rt.cfg, reuse_len);
+    clear_kv_cache_from(dr->vcache, &dr->rt.cfg, reuse_len);
+
+    if (resume_pos_out != NULL) {
+        *resume_pos_out = reuse_len;
+    }
+    pc->restores++;             // 记录一次前缀缓存成功恢复
+    return reuse_len;
 }
 
 static void prefix_cache_save_after_prefill(struct daemon_runtime *dr) {
     struct llm_runtime *rt = &dr->rt;
     struct daemon_prefix_cache *pc = &dr->prefix_cache;
-    int save_prefix_len = rt->prompt_n - 1;
+    int save_prefix_len = rt->prompt_n - 1;             // 约束保存范围：限于 prompt token（除最后一个 token 外）
 
     /*
      * 这个 skeleton 最多只复用到 prompt_n - 1。
@@ -268,17 +281,8 @@ static void prefix_cache_save_after_prefill(struct daemon_runtime *dr) {
     pc->cached_prefix_len = save_prefix_len;
     pc->saves++;
 
-    /*
-     * BONUS_TODO(4/4): 在 prompt prefill 结束后保存 prefix 对应的 KV 状态。
-     * 你需要：
-     * 1. 把 dr->kcache 里前 save_prefix_len 个位置的 K slice 拷进 cached_kcache；
-     * 2. 把 dr->vcache 里前 save_prefix_len 个位置的 V slice 拷进 cached_vcache；
-     * 3. 只保存 prefix 部分，不要把生成阶段写入的位置一起保存。
-     *
-     * 当前框架已经把 snapshot 的保存时机放在 prompt prefill 结束之后了，
-     * 你只需要补全具体的 KV 拷贝逻辑即可。
-     */
-    (void)dr;
+    prefix_cache_copy_prefix_slice(pc->cached_kcache, dr->kcache, &dr->rt.cfg, save_prefix_len);
+    prefix_cache_copy_prefix_slice(pc->cached_vcache, dr->vcache, &dr->rt.cfg, save_prefix_len);
 
     /*
      * 背后的原因是：如果等完整冷启动 decode 结束后再保存，
