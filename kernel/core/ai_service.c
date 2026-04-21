@@ -402,6 +402,7 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
     memset(result, 0, sizeof(result));
 
     int succ = 0;           // 成功指示：成功将结果从用户空间复制到内核缓存
+    int err = 0;            // 错误码
     int result_len = 0;     // 结果长度
 
     acquire(&aisvc.lock);
@@ -437,6 +438,8 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
     else {
         succ = 0;
         result_len = 0;
+        if (status < 0) err = status;
+        else            err = -1;
     }
 
     // 重新上锁并更新请求槽中的请求状态
@@ -464,9 +467,10 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
     else {
         // 状态为失败
         req->state = AIREQ_FAILED;
-        req->err = -1;
         req->result[0] = '\0';
         req->result_len = 0;
+        if (err < 0)    req->err = err;
+        else            req->err = -1;
     }
     // 唤醒请求的父进程
     wakeup(req);
