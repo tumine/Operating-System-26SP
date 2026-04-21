@@ -314,9 +314,8 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
 
     acquire(&aisvc.lock);
 
-    // 执行进程身份校验
-    if (p->pid != aisvc.worker_pid) {
-        // 函数的调用进程不是 worker，身份校验失败
+    // 先检查 worker 是否在线，再执行进程身份校验
+    if (!aisvc.worker_online || p->pid != aisvc.worker_pid) {
         release(&aisvc.lock);
         return -1;
     }
@@ -402,11 +401,13 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
     char result[AI_MAX_RESULT + 1];
     memset(result, 0, sizeof(result));
 
+    int succ = 0;           // 成功指示：成功将结果从用户空间复制到内核缓存
+    int result_len = 0;     // 结果长度
+
     acquire(&aisvc.lock);
 
-    // 执行进程身份校验
-    if (p->pid != aisvc.worker_pid) {
-        // 函数的调用进程不是 worker，身份校验失败
+    // 先检查 worker 是否在线，再执行进程身份校验
+    if (!aisvc.worker_online || p->pid != aisvc.worker_pid) {
         release(&aisvc.lock);
         return -1;
     }
@@ -424,40 +425,28 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
     // 离开临界区，将进行 copyin 操作，因此需要先释放锁
 
     // 如果状态为成功（status == 0），从用户空间复制生成的文本
-    if (status == 0 && out_len > 0) {
-        if (out_len > AI_MAX_RESULT) {
-            // 生成长度过长，需要重新获取锁并更新状态为 FAILED
-            acquire(&aisvc.lock);
-            // 二次上锁后，原 req 指针应被认为失效，需要重新根据 reqid 查找对应的请求槽
-            struct ai_request *req_retry = ai_find_req_by_id_locked(reqid);
-            if (req_retry != NULL && req_retry->state == AIREQ_RUNNING) {
-                req_retry->state = AIREQ_FAILED;
-                req_retry->err = -1;
-                req_retry->result_len = 0;
-                wakeup(req_retry);
-            }
-            release(&aisvc.lock);
-            return -1;
-        }
+    if (status == 0 && out_len >= 0 && out_len <= AI_MAX_RESULT && 
+        (out_len == 0 || out_uva != 0) && 
+        (out_len == 0 || copyin(p->pagetable, result, out_uva, out_len) >= 0)) {
 
-        // 尝试从用户空间复制结果到内核缓冲区
-        if (copyin(p->pagetable, result, out_uva, out_len) < 0) {
-            // 复制失败（非法用户指针）
-            acquire(&aisvc.lock);
-            struct ai_request *req_retry = ai_find_req_by_id_locked(reqid);
-            if (req_retry != NULL && req_retry->state == AIREQ_RUNNING) {
-                req_retry->state = AIREQ_FAILED;
-                req_retry->err = -1;
-                req_retry->result_len = 0;
-                wakeup(req_retry);
-            }
-            release(&aisvc.lock);
-            return -1;
-        }
+        // 合法复制
+        result[out_len] = '\0';
+        succ = 1;
+        result_len = out_len;
+    }
+    else {
+        succ = 0;
+        result_len = 0;
     }
 
     // 重新上锁并更新请求槽中的请求状态
     acquire(&aisvc.lock);
+
+    // 先检查 worker 是否在线，再执行进程身份校验
+    if (!aisvc.worker_online || p->pid != aisvc.worker_pid) {
+        release(&aisvc.lock);
+        return -1;
+    }
 
     // 重新根据 reqid 查找对应的请求槽
     req = ai_find_req_by_id_locked(reqid);
@@ -466,29 +455,24 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
         return -1;
     }
 
-    if (status == 0) {
-        // 状态为成功
+    if (succ) {
         req->state = AIREQ_DONE;
         req->err = 0;
-        req->result_len = out_len;
-        memmove(req->result, result, out_len + 1);      // 把请求的结果复制到请求槽中
-        // 唤醒请求的父进程
-        wakeup(req);
-
-        release(&aisvc.lock);
-        return 0;
+        req->result_len = result_len;
+        memmove(req->result, result, result_len + 1);      // 把请求的结果复制到请求槽中
     }
     else {
         // 状态为失败
         req->state = AIREQ_FAILED;
         req->err = -1;
+        req->result[0] = '\0';
         req->result_len = 0;
-        // 唤醒请求的父进程
-        wakeup(req);
-
-        release(&aisvc.lock);
-        return -1;
     }
+    // 唤醒请求的父进程
+    wakeup(req);
+
+    release(&aisvc.lock);
+    return 0;
 }
 
 void ai_service_proc_exit(int pid) {
