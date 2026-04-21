@@ -394,7 +394,7 @@ int ai_service_worker_get(uint64 token_uva, int token_cap, uint64 reqid_uva, uin
 
 int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int status) {
     struct proc *p = myproc();
-    if (p == 0 || p->pagetable == 0 || reqid <= 0 || out_uva == 0 || out_len <= 0) {
+    if (p == 0 || p->pagetable == 0 || reqid <= 0) {
         return -1;
     }
 
