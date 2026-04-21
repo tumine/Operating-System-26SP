@@ -433,6 +433,7 @@ int ai_service_worker_complete(int reqid, uint64 out_uva, int out_len, int statu
         // 合法复制
         result[out_len] = '\0';
         succ = 1;
+        err = 0;
         result_len = out_len;
     }
     else {
