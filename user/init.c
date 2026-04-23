@@ -66,9 +66,9 @@ static int start_ai_daemon(int *ready_out) {
         return -1;
     }
 
-    if (pid == 0) {
+    if (pid == 0) {     // 子进程
         char fdarg[16];
-        close(ready_pipe[0]);
+        close(ready_pipe[0]);   // 关闭管道读端（子进程通过管道向父进程发送就绪信号）
         uitoa10(ready_pipe[1], fdarg, sizeof(fdarg));
         char *argv[] = {"ai_daemon", "--ready-fd", fdarg, 0};
         exec("/ai_daemon", argv);
@@ -77,9 +77,10 @@ static int start_ai_daemon(int *ready_out) {
         exit(127);
     }
 
-    close(ready_pipe[1]);
+    // 父进程
+    close(ready_pipe[1]);       // 关闭管道写端（父进程只读）
     char ready = 0;
-    int n = read(ready_pipe[0], &ready, 1);
+    int n = read(ready_pipe[0], &ready, 1);     // 父进程阻塞等待子进程发送就绪信号
     close(ready_pipe[0]);
     if (n == 1) {
         if (ready_out != 0) {
@@ -95,9 +96,10 @@ static int start_ai_daemon(int *ready_out) {
 int main(void) {
     int shell_pid = -1;
     int daemon_pid = -1;
-    int want_ai = have_ai_assets();
+    int want_ai = have_ai_assets();     // 是否存在 AI 资产文件
 
     for (;;) {
+        // 启动 AI 守护进程
         if (want_ai && daemon_pid < 0) {
             int daemon_ready = 0;
             daemon_pid = start_ai_daemon(&daemon_ready);
@@ -109,26 +111,31 @@ int main(void) {
                 printf("[init] disabling ai_daemon restarts after startup failure\n");
             }
         }
+
+        // 启动 shell
         if (shell_pid < 0) {
             shell_pid = start_shell();
             if (shell_pid < 0) {
-                yield();
+                yield();        // 让出 CPU 资源
                 continue;
             }
         }
 
         int status = 0;
-        int pid = wait(&status);
+        int pid = wait(&status);        // 阻塞等待任意子进程退出
         if (pid < 0) {
             printf("[init] wait failed\n");
             yield();
             continue;
         }
 
+        // shell 退出
         if (pid == shell_pid) {
             shell_pid = -1;
             continue;
         }
+
+        // AI 守护进程退出
         if (pid == daemon_pid) {
             printf("[init] ai_daemon exited status=%d\n", status);
             daemon_pid = -1;

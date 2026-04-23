@@ -72,23 +72,23 @@ static int prefix_cache_plan_copy(
     if (prefix_len < 0) {
         prefix_len = 0;
     }
-    // prefix_len 上限约束
+    // prefix_len 上限约束，不能超过 KV Cache 支持的最大序列长度
     if (prefix_len > cfg->runtime_seq_len) {
         prefix_len = cfg->runtime_seq_len;
     }
 
-    // 计算单个位置的 KV 元素数
+    // 计算单个位置的 KV 元素数，只依赖于全局模型配置
     uint64 elems_per_pos = (uint64)cfg->n_kv_heads * (uint64)cfg->head_dim;
-    // 计算单层 cache 跨度
+    // 计算单层 cache 跨度（序列元素数×单个位置的 KV 元素数），只依赖于全局模型配置
     uint64 layer_span = (uint64)cfg->runtime_seq_len * elems_per_pos;
-    // 计算要复制的 prefix 元素数
+    // 计算整个 prefix 序列的 KV 元素总数
     uint64 prefix_elems = (uint64)prefix_len * elems_per_pos;
 
     // 返回 layer_span 和 prefix_elems
-    if (layer_span_out != 0) {
+    if (layer_span_out != NULL) {
         *layer_span_out = layer_span;
     }
-    if (prefix_elems_out != 0) {
+    if (prefix_elems_out != NULL) {
         *prefix_elems_out = prefix_elems;
     }
     return prefix_len;
@@ -110,7 +110,7 @@ prefix_cache_copy_prefix_slice(float *dst, const float *src, const struct model_
     for (int layer_count = 0; layer_count < cfg->n_layers; layer_count++) {
         float *dst_layer = dst + (uint64)layer_count * layer_span;              // 定位到复制目标中本层起点
         const float *src_layer = src + (uint64)layer_count * layer_span;        // 定位到复制源中本层起点
-        memcpy(dst_layer, src_layer, (uint64)(prefix_elems * sizeof(float)));   // 复制前 prefix_elems 个 float 字节数据
+        memcpy(dst_layer, src_layer, (uint64)(prefix_elems * sizeof(float)));   // 复制前 prefix_elems 个元素，每个元素都是 float 类型
     }
 }
 
@@ -225,30 +225,31 @@ static int prefix_cache_try_restore(struct daemon_runtime *dr, int token_count, 
     int reuse_len = matched;
 
     if (resume_pos_out != NULL) {
-        // 缺省重置开始继续解码的位置为 0，如果缓存命中会重新设置该字段
+        // 缺省重置开始继续推理的位置为 0，如果缓存命中会重新设置该字段
         *resume_pos_out = 0;
     }
     if (reuse_len > token_count - 1) {
-        // 缓存最多只保存到 prompt_n - 1，对于超出的 token 不再进行复用
+        // 缓存最多只保存到 prompt_n - 1，对于超出的 token 不再进行复用，以便运行一次 forward 产生第一个新词的 logits
         reuse_len = token_count - 1;
     }
     if (reuse_len <= 0) {
-        // 记录一次缓存未命中
+        // 没有可复用的前缀，记录一次缓存未命中
         pc->misses++;
         return 0;
     }
 
-    copy_prompt_to_seq(dr);     // 把 dr->rt.prompt 拷回 dr->rt.seq
+    copy_prompt_to_seq(dr);     // 把 prompt token 拷入运行时序列
 
-    // 恢复 KV Cache
+    // 从 KV Cache 缓存中恢复上一次的 KV Cache 数据
     prefix_cache_copy_prefix_slice(dr->kcache, pc->cached_kcache, &dr->rt.cfg, reuse_len);
     prefix_cache_copy_prefix_slice(dr->vcache, pc->cached_vcache, &dr->rt.cfg, reuse_len);
 
-    // 将 KV Cache 中 reuse_len 以后的内容清空
+    // 将 KV Cache 中 reuse_len 以后的内容（无法用于本次 Prefill 过程）清空
     clear_kv_cache_from(dr->kcache, &dr->rt.cfg, reuse_len);
     clear_kv_cache_from(dr->vcache, &dr->rt.cfg, reuse_len);
 
     if (resume_pos_out != NULL) {
+        // 恢复 KV Cache 缓存后，接下来需要从 reuse_len 处开始继续推理
         *resume_pos_out = reuse_len;
     }
     pc->restores++;             // 记录一次前缀缓存成功恢复
@@ -276,11 +277,12 @@ static void prefix_cache_save_after_prefill(struct daemon_runtime *dr) {
 
     memcpy(pc->cached_tokens, rt->prompt, (uint)((uint64)save_prefix_len * sizeof(uint32)));
 
-    pc->valid = 1;
-    pc->model_kind = dr->model_kind;
-    pc->cached_prefix_len = save_prefix_len;
-    pc->saves++;
+    pc->valid = 1;                              // 标记 KV Cache 缓存有效
+    pc->model_kind = dr->model_kind;            // 记录模型类型
+    pc->cached_prefix_len = save_prefix_len;    // 缓存有效长度
+    pc->saves++;                                // 记录一次 KV Cache 缓存动作
 
+    // 将刚完成的 Prefill 过程中的 KV Cache 备份到 pc->cached_k/vcache 中
     prefix_cache_copy_prefix_slice(pc->cached_kcache, dr->kcache, &dr->rt.cfg, save_prefix_len);
     prefix_cache_copy_prefix_slice(pc->cached_vcache, dr->vcache, &dr->rt.cfg, save_prefix_len);
 
