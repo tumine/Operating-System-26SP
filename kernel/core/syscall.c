@@ -103,25 +103,28 @@ static uint64 sys_sbrk(void) {
     uint64 addr = p->sz;
 
     if (lazy_alloc_enabled && n > 0) {
-        // TODO: Implement lazy-growth sbrk.
-        //
-        // Reserve virtual address space without allocating physical pages.
-        // Validate the new size against the same user-space limit used by the
-        // eager path, then update p->sz only after validation succeeds.
-        // Temporary fallback: keep sbrk functional, but this is eager and will
-        // not pass the lazy-allocation tests.
-        if (growproc(n) < 0)
+        uint64 newsz = addr + (uint64)n;                    // 新的 break
+        // 检查新的 break 是否溢出或超过用户空间上界
+        if (newsz < addr || newsz > proc_mmap_limit(p)) {
             return (uint64)-1;
-    } else if (n < 0) {
-        // TODO: Implement shrinking.
-        //
-        // Shrinking is not lazy: pages above the new logical size should be
-        // released immediately, including ranges that may contain lazy holes.
-        //
-        // Temporary stub: fail gracefully until this path is implemented.
-        return (uint64)-1;
-    } else {
-        // Eager allocation : allocate physical memory now.
+        }
+        // Lazy Allocation 只通过更新 p->sz 扩大逻辑地址空间，不调用 uvmalloc/growproc 分配物理页框；
+        // 在进程第一次访问一个页面时，通过 page fault handling 为该页面分配一个物理页框
+        p->sz = newsz;
+    }
+    else if (n < 0) {
+        // 在 Lazy Allocation 下，也立即释放超出新大小的已映射页面，避免内存泄漏
+        int64 newsz = (int64)addr + (int64)n;               // 缩小后的 break
+        // 检查新 break 是否为负值
+        if (newsz < 0) {
+            return (uint64)-1;
+        }
+        // 调用 uvmdealloc 释放 [newsz, addr) 范围内已映射的物理页框
+        // uvmdealloc 中调用的 uvmunmap 可安全跳过尚未映射的 lazy 页面
+        p->sz = uvmdealloc(p->pagetable, addr, (uint64)newsz);
+    }
+    else {
+        // Eager allocation，直接调用 growproc 打包完成 p->sz 更新和分配物理页框
         if (growproc(n) < 0)
             return (uint64)-1;
     }
