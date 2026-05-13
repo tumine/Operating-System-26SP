@@ -113,19 +113,29 @@ uint64 walkaddr(pagetable_t pagetable, uint64 va) {
 }
 
 static int should_lazy_alloc(struct proc *p, pagetable_t pagetable, uint64 va) {
-    (void) p;
-    (void) pagetable;
-    (void) va;
-    // TODO: [Lazy-allocation] Decide whether va is a valid lazy-allocation fault.
-    // A valid lazy page should:
-    // - belong to the process's logical address space
-    // - stay below the reserved top-of-user-space region
-    // - not overlap the user stack guard page
-    // - not already have a valid mapping
-    //
-    // Return 1 if the kernel should allocate a zero-filled page for va.
-    // Return 0 if the fault should be treated as invalid.
-    return 0;
+    // 判断 va 是否可以通过 Lazy Allocation 补页
+
+    // 检查 va 是否处在进程的逻辑地址空间 p->sz 范围内
+    if (va >= p->sz) {
+        return 0;
+    }
+
+    // 检查 va 是否超过用户空间上界 TRAPFRAME
+    // TRAPFRAME 以上的地址由内核使用，不允许分配
+    if (va >= TRAPFRAME) {
+        return 0;
+    }
+
+    // 检查 va 对应的 PTE 是否已经存在有效映射，或与栈低址方向的 guard page 重叠
+    // 如果 PTE_V 置位，说明该页已映射到物理页框或属于 Guard Page，不需要重新分配
+    pte_t *pte = walk(pagetable, va, 0);
+    if (pte != 0 && (*pte & PTE_V)) {
+        // 不论 PTE_U 是否置位，都说明不需要 Lazy Allocation
+        return 0;
+    }
+
+    // 以上检查都通过，则说明此页需要 Lazy Allocation
+    return 1;
 }
 
 int user_lazy_alloc(struct proc *p, pagetable_t pagetable, uint64 va) {
