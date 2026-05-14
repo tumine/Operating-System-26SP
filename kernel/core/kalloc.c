@@ -65,10 +65,18 @@ void kfree(void *pa) {
     }
 
 #if COW_ALLOC
-    // TODO: [COW] Release one owner of this physical page.
-    // A page that is still shared must not be returned to the freelist. Only
-    // the last release should continue to the normal free path below.
-
+    uint64 idx = (uint64)pa / PGSIZE;   // 将物理地址转换为页索引，用于在 ref_cnt 数组中定位该页的引用计数
+    acquire(&ref_lock);
+    // 引用计数减 1
+    ref_cnt[idx]--;
+    // 判断是否还有其他进程共享该页
+    int cnt = ref_cnt[idx];
+    release(&ref_lock);
+    // 如果引用计数仍大于 0，说明该页还被其他进程共享，不能释放回 freelist
+    if (cnt > 0) {
+        return;
+    }
+    // 引用计数为 0，继续执行下方的释放逻辑
 #endif
 
     // Fill with junk to catch dangling refs.
@@ -103,7 +111,7 @@ void kinit(void) {
 
 void *kalloc(void) {
     acquire(&kmem.lock);
-    struct run *r = kmem.freelist;
+    struct run *r = kmem.freelist;  // 获取第一个空闲物理页框基址
     if (r) {
         kmem.freelist = r->next;
     }
@@ -113,8 +121,12 @@ void *kalloc(void) {
         // Fill with junk to help spot uninitialized use.
         memset((void *)r, 5, PGSIZE);
 #if COW_ALLOC
-        // TODO: [COW] A freshly allocated physical page starts with one owner.
-
+        uint64 idx = (uint64)r / PGSIZE;    // 将物理地址转换为页索引，用于在 ref_cnt 数组中定位该页的引用计数
+        // 在启用 COW 时，新分配的物理页初始引用计数为 1，
+        // 表示当前在该页框上只建立一个映射关系（即调用 kalloc 的地址空间）
+        acquire(&ref_lock);
+        ref_cnt[(uint64)r / PGSIZE] = 1;
+        release(&ref_lock);
 #endif
         LOG_DEBUG("Allocated physical page at %p", r); // [埋点]
     } else {
