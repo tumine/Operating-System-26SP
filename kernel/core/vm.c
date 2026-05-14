@@ -524,12 +524,26 @@ int copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
             return -1;
         }
 #if COW_ALLOC
-        // TODO: [COW] Kernel writes to user memory must also respect COW.
-        //
-        // If the destination page is a COW mapping, resolve it before writing
-        // through pa0. The physical page used for the final memmove() must be
-        // the current private writable page.
+        // 启用 COW，内核写用户 COW 页前必须先解除该页的 COW 状态
 
+        // 检查目标页是否为 COW 页
+        if (*pte & PTE_COW) {
+            // 调用 cow_handle_fault 解除 COW 状态
+            if (cow_handle_fault(pagetable, va0) != 0) {
+                // COW fault handling 失败
+                return -1;
+            }
+            
+            // COW fault handling 后重新获取映射的物理页框和 PTE
+            pa0 = walkaddr(pagetable, va0);
+            if (pa0 == 0) {
+                return -1;
+            }
+            pte = walk(pagetable, va0, 0);
+            if (pte == 0) {
+                return -1;
+            }
+        }
 #endif
         if ((*pte & PTE_W) == 0) {
             return -1;
