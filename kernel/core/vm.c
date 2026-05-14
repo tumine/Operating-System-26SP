@@ -139,19 +139,26 @@ static int should_lazy_alloc(struct proc *p, pagetable_t pagetable, uint64 va) {
 }
 
 int user_lazy_alloc(struct proc *p, pagetable_t pagetable, uint64 va) {
+    // 将发生 Lazy Fault 的访存地址向下对齐到其所在页的起始地址，确保映射以页为粒度
     uint64 page = PGROUNDDOWN(va);
-    if (!should_lazy_alloc(p, pagetable, page)) {
+    if (!should_lazy_alloc(p, pagetable, page)) {   // 确认此页面是否可以通过 Lazy Allocation 修复
         return -1;
     }
-    // TODO: [Lazy-allocation] Allocate one physical page for this lazy fault.
-    //
-    // Requirements:
-    // - expose zero-filled memory to user space
-    // - map exactly the faulting virtual page
-    // - give the mapping user read/write permissions
-    // - release any temporary resources on failure
 
-    return -1;
+    char *mem = kalloc();           // 请求一页物理内存
+    if (mem == NULL) {  // 分配失败
+        return -1;
+    }
+    memset(mem, 0, PGSIZE);         // 初始化物理页框后再使用，确保 zero-fill-on-demand
+
+    // 将发生 Lazy Fault 的页面映射到新分配的物理页框
+    // PTE 权限设置为 PTE_R|PTE_W|PTE_U|PTE_V（mappages 内部会自动添加 PTE_V 权限位）
+    if (mappages(pagetable, page, PGSIZE, (uint64)mem, PTE_R | PTE_W | PTE_U) != 0) {
+        // 映射失败，则释放新分配的物理页框，避免内存泄漏
+        kfree(mem);
+        return -1;
+    }
+    return 0;
 }
 
 
@@ -186,7 +193,7 @@ int mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     uint64 a = va;
     uint64 last = va + size - PGSIZE;
     for (;;) {
-        pte_t *pte = walk(pagetable, a, 1);
+        pte_t *pte = walk(pagetable, a, 1); // 通过三级页表找到页面映射到的物理页框
         if (pte == 0) {
             return -1;
         }
