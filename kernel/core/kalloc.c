@@ -125,7 +125,7 @@ void *kalloc(void) {
         // 在启用 COW 时，新分配的物理页初始引用计数为 1，
         // 表示当前在该页框上只建立一个映射关系（即调用 kalloc 的地址空间）
         acquire(&ref_lock);
-        ref_cnt[(uint64)r / PGSIZE] = 1;
+        ref_cnt[idx] = 1;
         release(&ref_lock);
 #endif
         LOG_DEBUG("Allocated physical page at %p", r); // [埋点]
