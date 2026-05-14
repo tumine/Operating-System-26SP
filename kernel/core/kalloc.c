@@ -30,19 +30,24 @@ static int ref_cnt[PHYSTOP / PGSIZE];
 
 // Increase the reference count for a physical page.
 void kaddref(void *pa) {
-    (void)pa;
-    // TODO: [COW] Record one additional owner of this physical page.
-    // Concurrent fork/exit paths must not race with this metadata update.
-
+    // 将物理地址转换为页索引，用于在 ref_cnt 数组中定位该页的引用计数
+    uint64 idx = (uint64)pa / PGSIZE;
+    // 对 ref_lock 加锁保护，防止 fork/exit 或 COW fault handling 破坏计数结果
+    acquire(&ref_lock);
+    ref_cnt[idx]++;     // 一个新进程中的某个页面映射到此页框
+    release(&ref_lock);
 }
 
 // Get the reference count for a physical page.
 int kgetref(void *pa) {
-    (void)pa;
-    // TODO: [COW] Return how many address-space mappings still own this page.
-    // The COW fault path uses this to decide whether copying is necessary.
-
-    return 1;
+    // 将物理地址转换为页索引，用于在 ref_cnt 数组中定位该页的引用计数
+    uint64 idx = (uint64)pa / PGSIZE;
+    acquire(&ref_lock);
+    // 读取当前引用计数，确定有多少个地址空间映射共享该物理页
+    // COW fault handling 过程使用 cnt 的值判断是否需要复制进程私有的物理页
+    int cnt = ref_cnt[idx];
+    release(&ref_lock);
+    return cnt;
 }
 #else
 // Stubs when COW is disabled.
