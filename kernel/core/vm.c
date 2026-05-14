@@ -355,35 +355,37 @@ void uvmfree(pagetable_t pagetable, uint64 sz) {
 // Without COW: copy both page table and physical memory (original behavior).
 // Returns 0 on success, -1 on failure (and frees any allocated pages).
 int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
-    for (uint64 i = 0; i < sz; i += PGSIZE) {
+    for (uint64 i = 0; i < sz; i += PGSIZE) {   // 遍历父进程的每个页面
         pte_t *pte = walk(old, i, 0);
         if (pte == 0) {
             continue;
         }
-        if ((*pte & PTE_V) == 0) {
+        if ((*pte & PTE_V) == 0) {  // 跳过未建立映射的页面（包括 Lazy 页面）
             continue;
         }
 
         uint64 pa = PTE2PA(*pte);
-        uint flags = (uint)PTE_FLAGS(*pte);
+        uint flags = (uint)PTE_FLAGS(*pte);     // PTE 原标志位
 
 // If COW_ALLOC is enabled, fork should avoid unnecessary physical-page copies.
 #if COW_ALLOC
-        // TODO: [COW] Replace this eager-copy fallback with copy-on-write fork.
-        //
-        // Preserve parent/child isolation without copying every writable page
-        // immediately. Read-only pages and writable pages need different
-        // treatment, and shared physical pages need ownership metadata.
-        //
-        // This fallback keeps fork functional, but it is not COW.
-        void *mem = kalloc();
-        if (mem == 0) {
-            goto err;
+        // 启用 COW，在执行 fork 时只将父进程的所有页面设置为 COW 状态复制给子进程，不实际复制物理页框
+
+        // 调整 PTE 标志位：对于可写页调整为只读并添加 COW 标志位
+        // 对于只读页，保持权限不变即可
+        if (flags & PTE_W) {
+            // 撤销父进程中所有页面的写权限，并设置为 COW 状态
+            flags = (flags & ~PTE_W) | PTE_COW;
+            // 更新父进程页面的 PTE
+            *pte = PA2PTE(pa) | flags | PTE_V;
+            // 子进程共享父进程的页面-页框映射关系，因此增加映射物理页框的引用计数
+            kaddref((void *)pa);
         }
-        memmove(mem, (void *)pa, PGSIZE);
-        if (mappages(new, i, PGSIZE, (uint64)mem, flags) != 0) {
-            kfree(mem);
-            goto err;
+        // 将子进程的虚拟页映射到父进程的物理页框
+        if (mappages(new, i, PGSIZE, pa, flags) != 0) {
+            // 映射失败，调用 kfree 减少引用计数，避免内存泄漏
+            kfree((void *)pa);
+            goto err;   // 执行异常处理
         }
 #else
         // Eager copy: allocate new page and copy data.
