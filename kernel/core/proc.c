@@ -137,10 +137,14 @@ int proc_handle_page_fault(uint64 fault_va, int write) {
     }
 
     if (lazy_alloc_enabled) {
-        // TODO:[Lazy allocation]: try zero-fill-on-demand heap allocation before
-        // treating the fault as an invalid access, you should call user_lazy_alloc() to attempt to handle this page fault via lazy allocation.
+        // 调用 user_lazy_alloc，检查是否属于 Lazy Allocation 可处理的 Page Fault 并尝试进行处理
+        if (user_lazy_alloc(p, p->pagetable, va) == 0) {
+            // Lazy Allocation 成功
+            return 0;
+        }
     }
 
+    // Lazy Allocation 失败，继续尝试 mmap fault 处理路径
     struct vma *vma = vma_lookup(p, va);
     if (vma == 0) {
         return -1;

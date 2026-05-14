@@ -69,6 +69,7 @@ void trap_init(void) {
     // Don't enable interrupts here; let the scheduler do it.
 }
 
+// 识别用户态陷阱类型并分派给对应的处理函数
 void usertrap(void) {
     struct proc *p = myproc();
     if (p == 0 || p->trapframe == 0) {
@@ -76,18 +77,19 @@ void usertrap(void) {
     }
 
     // Must have trapped from U-mode.
-    if (r_sstatus() & SSTATUS_SPP) {
+    if (r_sstatus() & SSTATUS_SPP) {    // 检查陷阱发生之前是否处在用户态，usertrap 函数只处理来自用户态的陷阱
         panic("usertrap: not from user");
     }
 
     // Use the kernel trap vector while we're in the kernel.
-    w_stvec((uint64)kernelvec);
+    w_stvec((uint64)kernelvec);         // 将陷阱向量基址寄存器设为内核汇编陷阱处理入口
 
-    uint64 scause = r_scause();
-    p->trapframe->epc = r_sepc();
+    uint64 scause = r_scause();         // 发生陷阱的原因
+    p->trapframe->epc = r_sepc();       // 发生陷阱时用户态 PC
 
-    if (scause == SCAUSE_ECALL_U) {
-        if (p->killed) {
+    // 检查发生陷阱的原因，按不同原因分别采用不同方式进行处理
+    if (scause == SCAUSE_ECALL_U) {     // 用户态 ecall 系统调用
+        if (p->killed) {    // 进程已被杀死，则不执行系统调用
             proc_exit(-1);
         }
         // Skip the ecall instruction.
@@ -95,16 +97,18 @@ void usertrap(void) {
         // Allow interrupts while executing syscall handlers.
         intr_on();
         syscall();
-    } else if (scause >> 63) {
+    }
+    else if (scause >> 63) {            // 检查最高位是否为 1（属于中断）
         // Interrupt.
         uint64 code = scause & 0xfff;
-        if (code == SCAUSE_SSI) {
+        if (code == SCAUSE_SSI) {   // 时钟中断
             clearsip_ssip();
             on_timer_tick();
             if (p->state == RUNNING) {
                 yield();
             }
-        } else if (code == SCAUSE_SEI) {
+        }
+        else if (code == SCAUSE_SEI) {  // 设备中断
             int irq = plic_claim();
             if (irq == UART0_IRQ) {
                 uart_isr();
@@ -114,37 +118,52 @@ void usertrap(void) {
             if (irq) {
                 plic_complete(irq);
             }
-        } else {
+        }
+        else {
             printf("[usertrap] unknown interrupt scause=%p\n", scause);
         }
-    } else {
-        // Exception handling.
-        uint64 code = scause & 0xfff;
-        if (code == LOAD_PAGE_FAULT || code == STORE_PAGE_FAULT) {
+    }
+    else {  // 异常
+        uint64 code = scause & 0xfff;   // 提取异常码
+        if (code == LOAD_PAGE_FAULT || code == STORE_PAGE_FAULT) {  // Page Fault
             // Lazy allocation / COW: classify user page faults and
             // dispatch them to the correct memory-management path.
             // Page Fault: code 13 = Load Page Fault, code 15 = Store/AMO Page Fault.
-            uint64 fault_va = r_stval();
+            uint64 fault_va = r_stval();    // 获取引发 Page Fault 的虚拟页首地址
 
-            int handled = 0;
+            int cow_handled = 0;    // 用于标记是否被 COW 处理
 #if COW_ALLOC
             if (code == STORE_PAGE_FAULT) {
-                // TODO: Detect and resolve writes to COW pages.
-                //
-                // Only a real COW store fault should be handled here. Other
-                // page faults must fall through to the lazy/mmap handler below.
-                // If COW handling fails, mark this process as killed.
+                // Store Page Fault 可能源于尝试写入 COW 页，进一步判断是否真的属于 COW Fault
+                pte_t *pte = walk(p->pagetable, fault_va, 0);   // 找到该页面对应的叶子 PTE
+
+                // 判断是否是 COW Fault，看 PTE 是否存在，PTE_V|PTE_COW 是否有效
+                if (pte && (*pte & PTE_V) && (*pte & PTE_COW)) {
+                    // 调用 cow_handle_fault，根据页面的引用计数决定复制一份私有页还是撤销 COW 状态、恢复写权限
+                    if (cow_handle_fault(p->pagetable, fault_va) == 0) {
+                        // COW Fault 处理完成
+                        cow_handled = 1;
+                    }
+                    else {
+                        // COW Fault 处理失败，杀死进程
+                        p->killed = 1;
+                        cow_handled = 1; // 标记已处理，避免重复交给 proc_handle_page_fault 处理
+                    }
+                }
+                // 不是 COW Fault，继续交由 Lazy Allocation 或 mmap fault 的处理路径
             }
 #endif
 
-            if (!handled) {
-                // TODO: Dispatch remaining valid lazy/mmap faults to proc.c.
-                //
-                // Invalid addresses and protection faults should kill only the
-                // faulting process, not panic the kernel.
-                (void) fault_va;
+            if (!cow_handled) {
+                // 不属于 COW Fault，调用 proc_handle_page_fault 处理                
+                int write = (code == STORE_PAGE_FAULT) ? 1 : 0;     // 指示是否为 Store Fault，用于 mmap fault 处理路径
+                if (proc_handle_page_fault(fault_va, write) != 0) {
+                    // 处理失败，杀死当前进程
+                    p->killed = 1;
+                }
             }
-        } else {
+        }
+        else {  // 无法识别的异常，杀死进程
             printf("[usertrap] scause=%p sepc=%p stval=%p\n", scause, r_sepc(), r_stval());
             p->killed = 1;
         }
