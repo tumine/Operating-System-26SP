@@ -367,6 +367,10 @@ int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
         uint64 pa = PTE2PA(*pte);
         uint flags = (uint)PTE_FLAGS(*pte);     // PTE 原标志位
 
+        // 任何被 fork 共享到子进程的有效用户页都必须增加引用计数，
+        // 否则子进程退出时会把仍在被父进程使用的只读页提前释放
+        kaddref((void *)pa);
+
 // If COW_ALLOC is enabled, fork should avoid unnecessary physical-page copies.
 #if COW_ALLOC
         // 启用 COW，在执行 fork 时只将父进程的所有页面设置为 COW 状态复制给子进程，不实际复制物理页框
@@ -378,8 +382,6 @@ int uvmcopy(pagetable_t old, pagetable_t new, uint64 sz) {
             flags = (flags & ~PTE_W) | PTE_COW;
             // 更新父进程页面的 PTE
             *pte = PA2PTE(pa) | flags | PTE_V;
-            // 子进程共享父进程的页面-页框映射关系，因此增加映射物理页框的引用计数
-            kaddref((void *)pa);
         }
         // 将子进程的虚拟页映射到父进程的物理页框
         if (mappages(new, i, PGSIZE, pa, flags) != 0) {
