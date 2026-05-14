@@ -455,21 +455,54 @@ void uvmclear(pagetable_t pagetable, uint64 va) {
 // [COW] Handle a write fault by either restoring write permission when
 // this process is the only owner, or copying data into a private page.
 int cow_handle_fault(pagetable_t pagetable, uint64 va) {
-    (void) pagetable;
-    (void) va;
-    // TODO: [COW] Resolve a write fault on a copy-on-write page.
-    //
-    // Requirements:
-    // - reject faults that are not real COW faults
-    // - preserve the old page contents
-    // - give the faulting process a writable private mapping when needed
-    // - avoid unnecessary copying when the page is no longer shared
-    // - update physical-page ownership metadata correctly
-    //
-    // Return 0 on success, -1 on invalid fault or allocation failure.
+    // 将 fault 地址对齐到页面基址
+    uint64 page = PGROUNDDOWN(va);
 
+    // 检查 fault 页面的 PTE 是否存在
+    pte_t *pte = walk(pagetable, page, 0);
+    if (pte == 0) {
+        // PTE 不存在，不是 COW fault
+        return -1;
+    }
 
-    return -1;
+    // 检查 PTE 是否有效且处于 COW 状态
+    if (!(*pte & PTE_V) || !(*pte & PTE_COW)) {
+        return -1;
+    }
+
+    // 检查 PTE 是否用户态可访问
+    if (!(*pte & PTE_U)) {
+        return -1;
+    }
+
+    // 获取 COW 页映射到的物理页框地址和页面标志位
+    uint64 pa = PTE2PA(*pte);
+    uint flags = (uint)PTE_FLAGS(*pte);
+
+    // 根据引用计数决定处理策略
+    int ref = kgetref((void *)pa);
+    if (ref == 1) {
+        // 引用计数为 1，直接恢复当前页面的写权限、撤销 COW 状态
+        *pte = PA2PTE(pa) | (flags & ~PTE_COW) | PTE_W | PTE_V;
+    }
+    else {
+        // 引用计数大于 1，需要为当前进程复制一个物理页框并改变映射关系
+        char *mem = kalloc();
+        if (mem == 0) {
+            // 物理页框分配失败
+            return -1;
+        }
+        // 将 COW 页的内容复制到新页
+        memmove(mem, (void *)pa, PGSIZE);
+        // 更新 PTE，将页面映射到新的私有物理页框，恢复写权限，移除 COW 标记
+        *pte = PA2PTE((uint64)mem) | (flags & ~PTE_COW) | PTE_W | PTE_V;
+        // 减少 COW 页的引用计数
+        kfree((void *)pa);
+    }
+
+    // 显式刷新 TLB，清除该页面的映射关系，确保后续访问该页面时使用新的 PTE
+    sfence_vma();
+    return 0;
 }
 #endif
 
