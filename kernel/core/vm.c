@@ -164,14 +164,43 @@ int user_lazy_alloc(struct proc *p, pagetable_t pagetable, uint64 va) {
 
 extern int lazy_alloc_enabled;
 static uint64 lazy_alloc_walkaddr(pagetable_t pagetable, uint64 va, int write) {
-    (void) write;
-    // TODO: [Lazy-allocation] Support kernel-side access to untouched lazy pages.
-    //
-    // walkaddr() succeeds only if the page is already mapped. If it fails,
-    // a valid lazy page should be allocated on demand, then walkaddr() should
-    // be retried.
+    uint64 pa = walkaddr(pagetable, va);    // 查询当前页面是否已经映射到用户态下可访问的物理页框
+    if (pa != 0) {
+        // 页面已有映射
+#if COW_ALLOC
+        // 检查页面是否为 COW 页，并在意图执行写操作（write 参数指示）时为当前进程复制一个私有页解除 COW 状态
+        if (write) {
+            pte_t *pte = walk(pagetable, va, 0);
+            if (pte && (*pte & PTE_COW)) {
+                // 页面是 COW 页，调用 cow_handle_fault 解除 COW 状态
+                if (cow_handle_fault(pagetable, va) != 0) {
+                    return 0; // COW fault 处理失败
+                }
+                // COW fault 处理成功后，映射的物理页框可能改变
+                // 因此重新获取页面映射到的物理页框信息
+                pa = walkaddr(pagetable, va);
+            }
+        }
+#endif
+        return pa;
+    }
 
-    return walkaddr(pagetable, va);
+    // walkaddr 失败，说明页面尚未映射
+    // 若启用 Lazy Allocation，则分配一个物理页框
+    if (lazy_alloc_enabled) {
+        struct proc *p = myproc();
+        // 确保当前有进程上下文，且有有效页表
+        if (p && p->pagetable == pagetable) {
+            // 调用 user_lazy_alloc 为当前页面分配物理页框
+            if (user_lazy_alloc(p, pagetable, va) == 0) {
+                // 分配成功，调用 walkaddr 获取页面映射到的物理页框信息
+                return walkaddr(pagetable, va);
+            }
+        }
+    }
+
+    // 未启用 Lazy Allocation 或 Lazy Allocation 失败
+    return 0;
 }
 
 // Create PTEs for virtual addresses starting at va that refer to
