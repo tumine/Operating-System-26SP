@@ -130,7 +130,7 @@ static int should_lazy_alloc(struct proc *p, pagetable_t pagetable, uint64 va) {
     // 如果 PTE_V 置位，说明该页已映射到物理页框或属于 Guard Page，不需要重新分配
     pte_t *pte = walk(pagetable, va, 0);
     if (pte != 0 && (*pte & PTE_V)) {
-        // 不论 PTE_U 是否置位，都说明不需要 Lazy Allocation
+        // 不论 PTE_U 是否置位（分别对应用户页与 Guard Page），都说明不需要 Lazy Allocation
         return 0;
     }
 
@@ -168,10 +168,10 @@ static uint64 lazy_alloc_walkaddr(pagetable_t pagetable, uint64 va, int write) {
     if (pa != 0) {
         // 页面已有映射
 #if COW_ALLOC
-        // 检查页面是否为 COW 页，并在意图执行写操作（write 参数指示）时为当前进程复制一个私有页解除 COW 状态
+        // 在意图执行写操作（write 参数指示）时解除 COW 状态
         if (write) {
             pte_t *pte = walk(pagetable, va, 0);
-            if (pte && (*pte & PTE_COW)) {
+            if (pte && (*pte & PTE_COW)) {      // 检查是否是 COW 页
                 // 页面是 COW 页，调用 cow_handle_fault 解除 COW 状态
                 if (cow_handle_fault(pagetable, va) != 0) {
                     return 0; // COW fault 处理失败
@@ -463,7 +463,7 @@ int cow_handle_fault(pagetable_t pagetable, uint64 va) {
     // 检查 fault 页面的 PTE 是否存在
     pte_t *pte = walk(pagetable, page, 0);
     if (pte == 0) {
-        // PTE 不存在，不是 COW fault
+        // PTE 不存在，说明 va 地址非法或所在的页面没有分配可用的页表
         return -1;
     }
 
@@ -536,7 +536,7 @@ int copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len) {
                 return -1;
             }
             
-            // COW fault handling 后重新获取映射的物理页框和 PTE
+            // COW fault handling 后重新获取映射的物理页框基址和 PTE
             pa0 = walkaddr(pagetable, va0);
             if (pa0 == 0) {
                 return -1;

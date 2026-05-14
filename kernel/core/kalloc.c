@@ -31,7 +31,7 @@ static int ref_cnt[PHYSTOP / PGSIZE];
 // Increase the reference count for a physical page.
 void kaddref(void *pa) {
     // 将物理地址转换为页索引，用于在 ref_cnt 数组中定位该页的引用计数
-    uint64 idx = (uint64)pa / PGSIZE;
+    uint64 idx = (uint64)pa / PGSIZE;   // idx 实际上指示 pa 位于第几个页框中
     // 对 ref_lock 加锁保护，防止 fork/exit 或 COW fault handling 破坏计数结果
     acquire(&ref_lock);
     ref_cnt[idx]++;     // 一个新进程中的某个页面映射到此页框
@@ -123,7 +123,7 @@ void *kalloc(void) {
 #if COW_ALLOC
         uint64 idx = (uint64)r / PGSIZE;    // 将物理地址转换为页索引，用于在 ref_cnt 数组中定位该页的引用计数
         // 在启用 COW 时，新分配的物理页初始引用计数为 1，
-        // 表示当前在该页框上只建立一个映射关系（即调用 kalloc 的地址空间）
+        // 表示当前在该页框上只建立一个映射关系（源自调用 kalloc 的进程的逻辑地址空间）
         acquire(&ref_lock);
         ref_cnt[idx] = 1;
         release(&ref_lock);
