@@ -492,28 +492,21 @@ static uint fat16_dir_entry_offset(uint slot_index) {
  *   普通子目录：内容存放在数据区簇链中，查找时需要沿FAT链定位。
  */
 static int fat16_slot_by_index(struct inode *dp, uint index, struct fat16_slot *slot) {
-    /*
-     * LAB TODO [1.2]
-     *
-     * 提示：普通子目录分支在下面，它需要走簇链；根目录分支不需要读FAT表。
-     */
-    /* LAB TODO [1.2] BEGIN */
+    // 判断是否属于根目录
+    if (dp->inum == FAT16_ROOT_INUM || dp->addrs[0] == 0) {     // inode 号或簇号匹配为根目录
+        if (index >= meta.root_entries) {   // 目录项序号不合法
+            return -1;
+        }
 
-    panic("fat16_slot_by_index: not implemented");
-
-    // 请在以下 if 块中实现根目录的目录项定位
-    if (dp->inum == FAT16_ROOT_INUM || dp->addrs[0] == 0) {
-    
-
-
-
-
-
-
+        uint entry_byte_offset = index * FAT16_DIR_ENTRY_SIZE;  // 目录项在根目录内的字节偏移量
+        slot->sector = meta.root_sec + entry_byte_offset / BSIZE;   // 该目录项所属扇区
+        slot->offset = entry_byte_offset % BSIZE;                   // 该目录项在扇区内的字节偏移量
+        slot->index = index;                                        // 目录项序号
+        fat16_read_entry(slot->sector, slot->offset, &slot->entry); // 读出目录项数据并存入 slot->entry
+        return 0;
     }
 
-    /* LAB TODO [1.2] END */
-
+    // 非根目录，走普通子目录路径
     uint slots_per_cluster = meta.cluster_size / FAT16_DIR_ENTRY_SIZE;
     uint cluster_index = index / slots_per_cluster;
     uint within = index % slots_per_cluster;
