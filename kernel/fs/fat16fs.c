@@ -1017,7 +1017,7 @@ int fat16fs_readi(struct inode *ip, uint64 off, void *dst, uint n) {
     while (copied < n) {
         uint cluster;
         if (fat16_cluster_for_offset(ip, off + copied, 0, &cluster) < 0) {  // 查找第 off+copied 个字节在哪个簇上
-            // 读取出错
+            // 查找出错
             break;
         }
         uint cluster_offset = (off + copied) % meta.cluster_size;   // 目标字节在簇内的偏移量
@@ -1091,41 +1091,39 @@ int fat16fs_writei(struct inode *ip, uint64 off, const void *src, uint n) {
         return -1;
     }
 
-    /*
-     * LAB TODO [1.4]
-     *
-     * 普通文件写入循环。
-     *
-     * 用fat16_cluster_for_offset()找到对应簇，根据off和已经写入的字节数计算需要读的扇区和扇区内偏移
-     * 将数据写入扇区中，直到写完n字节。注意，fat16_cluster_for_offset()的alloc参数要设置为1，允许它
-     * 在写路径上分配新簇
-     */
-    /* LAB TODO [1.4] BEGIN: write data */
+    // 向文件中写入数据
+    uint copied = 0;    // 已成功写入的字节数
+    while (copied < n) {
+        uint cluster;
+        if (fat16_cluster_for_offset(ip, off + copied, 1, &cluster) < 0) {  // 查找第 off+copied 个字节在哪个簇上，必要时追加簇
+            // 查找出错
+            break;
+        }
+        uint cluster_offset = (off + copied) % meta.cluster_size;   // 目标字节在簇内的偏移量
+        uint sector = fat16_cluster_first_sector(cluster) + cluster_offset / BSIZE; // 目标字节所属的扇区（先定位簇起始扇区，再根据簇内偏移量确定簇内扇区号）
+        uint sector_offset = cluster_offset % BSIZE;                // 目标字节在扇区内的偏移量
+        uint chunk = min_uint(n - copied, BSIZE - sector_offset);   // 本次写入过程可以写入的字节数（扇区可写量和剩余待写入量的最小值）
 
-    panic("fat16fs_writei: not implemented");
+        // 从 src 中拷贝数据到当前扇区中
+        struct buf *bp = bread(meta.dev, sector);
+        memmove(bp->data + sector_offset, (const uchar *)src + copied, chunk);
+        bwrite(bp);
+        brelse(bp);
 
-    uint copied = 0;
+        copied += chunk;    // 更新已写入字节数
+    }
 
+    // 更新文件大小
+    if (off + copied > ip->size) {
+        // 写入后文件大小变大
+        ip->size = off + copied;
+        
+        if (!fat16_inode_pending(ip)) { // 检查文件是否已经分配目录项
+            // 文件已分配目录项，则将文件状态更新到其目录项上
+            fat16fs_iupdate(ip);
+        }
+    }
 
-
-
-
-
-
-
-
-
-    /* LAB TODO [1.4] END: write data */
-
-    /* LAB TODO [1.4] BEGIN: update file size */
-
-    
-
-
-
-
-
-    /* LAB TODO [1.4] END: update file size */
     if (need_unlock) {
         fat16fs_iunlock(ip);
     }
