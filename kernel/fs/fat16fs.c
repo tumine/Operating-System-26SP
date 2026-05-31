@@ -164,21 +164,9 @@ static int fat16_cluster_inuse(uint cluster) {
  * 将 FAT16 的数据簇号转换成该簇在磁盘上的第一个扇区号。
  */
 static uint fat16_cluster_first_sector(uint cluster) {
-    /*
-     * LAB TODO [1.1]
-     *
-     * 请根据 meta.data_sec、meta.sec_per_clus 和 FAT16_CLUSTER_MIN 计算 cluster 的首扇区
-     */
-    /* LAB TODO [1.1] BEGIN */
-    
-    panic("fat16_cluster_first_sector: not implemented");
-
-    uint first_sector = 0;
-
-
+    // 根据传入的簇号 cluster 和数据段起始扇区号计算当前簇的起始扇区号
+    uint first_sector = meta.data_sec + (cluster - FAT16_CLUSTER_MIN) * meta.sec_per_clus;
     return first_sector;
-
-    /* LAB TODO [1.1] END */
 }
 
 // 根据目录项所在的扇区号和扇区内偏移计算该目录项对应的inum
