@@ -979,6 +979,8 @@ static int fat16_read_dir(struct inode *ip, uint64 off, void *dst, uint n) {
  *
  * 目录读取交给 fat16_read_dir()；普通文件读取需要根据文件偏移沿FAT链找到对应簇，
  * 再把磁盘扇区中的字节拷贝到 dst。
+ * 
+ * @param off 从第 off 个字节开始读取数据
  */
 int fat16fs_readi(struct inode *ip, uint64 off, void *dst, uint n) {
     if (ip == 0 || dst == 0) {
@@ -1011,30 +1013,25 @@ int fat16fs_readi(struct inode *ip, uint64 off, void *dst, uint n) {
         n = (uint)(ip->size - off);
     }
 
-    /*
-     * LAB TODO [1.3]
-     *
-     * 普通文件读取循环。
-     *
-     * 用 fat16_cluster_for_offset()找到off和已经读出的字节数对应的簇，根据簇大小和簇内偏移计算需要读的扇区和扇区内偏移，
-     * 从磁盘读入扇区到内存后把数据拷贝到dst，直到读完n字节。
-     */
-    /* LAB TODO [1.3] BEGIN */
+    uint copied = 0;    // 已成功拷贝的字节数
+    while (copied < n) {
+        uint cluster;
+        if (fat16_cluster_for_offset(ip, off + copied, 0, &cluster) < 0) {  // 查找第 off+copied 个字节在哪个簇上
+            // 读取出错
+            break;
+        }
+        uint cluster_offset = (off + copied) % meta.cluster_size;   // 目标字节在簇内的偏移量
+        uint sector = fat16_cluster_first_sector(cluster) + cluster_offset / BSIZE; // 目标字节所属的扇区（先定位簇起始扇区，再根据簇内偏移量确定簇内扇区号）
+        uint sector_offset = cluster_offset % BSIZE;                // 目标字节在扇区内的偏移量
+        uint chunk = min_uint(n - copied, BSIZE - sector_offset);   // 本次读取过程可以读取的字节数（扇区可读量和剩余待读取量的最小值）
 
-    panic("fat16fs_readi: not implemented");
+        // 读取当前扇区中的数据并拷贝到 dst 中
+        struct buf *bp = bread(meta.dev, sector);
+        memmove((uchar *)dst + copied, bp->data + sector_offset, chunk);
+        brelse(bp);
 
-    uint copied = 0;
-
-
-
-
-
-
-
-
-
-
-    /* LAB TODO [1.3] END */
+        copied += chunk;    // 更新已拷贝字节数
+    }
 
     if (need_unlock) {
         fat16fs_iunlock(ip);
