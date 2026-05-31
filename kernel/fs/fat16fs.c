@@ -750,30 +750,16 @@ void fat16fs_fsinit(int dev) {
     struct buf *bp = bread((uint)dev, 0);
     uchar *d = bp->data;
 
-    /*
-     * LAB TODO [1.1]
-     *
-     * 第一步：从 BPB 中读取后续几何计算需要的字段。
-     */
-    /* LAB TODO [1.1] BEGIN: read BPB fields */
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-    // 包裹在 TODO 中的 panic 是用来帮助同学们定位需要实现的功能的，实现完后请一定记得要注释掉
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-    panic("fat16fs_fsinit: not implemented"); 
-
-
-
-
-
-
-
-
-
-    /* LAB TODO [1.1] END: read BPB fields */
+    // 从 BPB 中读取后续计算需要的字段
+    meta.bytes_per_sec = get16(d + 0xb);    // 每扇区字节数 2B
+    meta.sec_per_clus = d[0xd];             // 每簇扇区数 1B
+    meta.reserved = get16(d + 0xe);         // 保留扇区数 2B
+    meta.fats = d[0x10];                    // FAT 表个数 1B
+    meta.root_entries = get16(d + 0x11);    // 根目录项数 1B
+    uint tot16 = get16(d + 0x13);           // 扇区总数，分区小于 32MB 时 2B
+    uint tot32 = get32(d + 0x20);           // 扇区总数，分区大于 32MB 时 4B
+    meta.total_sec = tot16 != 0 ? tot16 : tot32;    // 扇区总数
+    meta.sec_per_fat = get16(d + 0x16);     // 每 FAT 表包含扇区数 2B
 
     ushort sig = get16(d + 510);
     brelse(bp);
@@ -783,24 +769,13 @@ void fat16fs_fsinit(int dev) {
         panic("fat16fs: bad boot sector");
     }
 
-    /*
-     * LAB TODO [1.1]
-     *
-     * 第二步：根据BPB字段推导FAT16的各个区域。
-     */
-    /* LAB TODO [1.1] BEGIN: compute FAT16 regions */
-
-    panic("fat16fs_fsinit: not implemented");
-
-
-
-
-
-
-
-
-
-    /* LAB TODO [1.1] END: compute FAT16 regions */
+    // 根据 BPB 字段推导 FAT16 的各个区域
+    meta.fat_sec = meta.reserved;                                       // FAT 区位于引导扇区之后
+    meta.root_sectors = (meta.root_entries * 32 + BSIZE - 1) / BSIZE;   // 每个目录项占用 32 字节，向上取整
+    meta.root_sec = meta.fat_sec + meta.fats * meta.sec_per_fat;        // 根目录起始扇区位于 FAT 区之后
+    meta.data_sec = meta.root_sec + meta.root_sectors;                  // 数据段位于根目录之后
+    meta.clusters = (meta.total_sec - meta.data_sec) / meta.sec_per_clus;   // 总簇数
+    meta.cluster_size = meta.sec_per_clus * meta.bytes_per_sec;         // 每簇的大小，按字节计
 
     printf("[fat16fs] mounted: sectors=%d clusters=%d spc=%d root=%d data=%d\n",
            meta.total_sec, meta.clusters, meta.sec_per_clus, meta.root_sec, meta.data_sec);
