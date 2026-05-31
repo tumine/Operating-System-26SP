@@ -935,29 +935,24 @@ static int fat16_cluster_for_offset(struct inode *ip, uint off, int alloc, uint 
 
     uint current_cluster = ip->addrs[0];
 
-    /*
-     * LAB TODO [1.3]
-     *
-     * 沿FAT链走到cluster_index指定的目标簇，如果提前到了链尾并且alloc为0，则说明off对应的数据不存在，返回-1；
-     * 如果alloc不为0，则需要分配新簇接到链尾继续走，直到走到目标簇
-     */
-    /* LAB TODO [1.3] BEGIN: walk or grow FAT chain */
+    for (uint i = 0; i < cluster_index; i++) {
+        uint next_cluster = fat16_read_fat(current_cluster);    // FAT 链表上的后继簇
+        if (fat16_fat_value_is_eoc(next_cluster) || !fat16_cluster_inuse(next_cluster)) {
+            // FAT 链表遍历到头或当前簇非法
+            if (!alloc) return -1;  // 不接入新簇，则直接报错返回
 
-    panic("fat16_cluster_for_offset: not implemented");
+            // 分配新簇并接到 FAT 表尾
+            uint new_cluster;
+            if (fat16_alloc_cluster(&new_cluster) < 0) return -1;   // 新簇分配失败
 
-
-
-
-
-
-
-
-
-
-
-
+            fat16_write_fat(current_cluster, new_cluster);
+            next_cluster = new_cluster; // 后继簇设为新分配的簇
+        }
+        current_cluster = next_cluster; // 完成一次沿链表迭代前进
+    }
+    // 迭代完成，找到目标簇
+    *cluster_out = current_cluster;
     return 0;
-    /* LAB TODO [1.3] END: walk or grow FAT chain */
 }
 
 // 从目录中读取FAT16 32B目录项字节流，不做legacyfs目录项转换
