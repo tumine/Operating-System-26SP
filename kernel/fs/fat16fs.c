@@ -341,23 +341,14 @@ static void fat16_dirent_set_first_cluster(struct dirent *entry, uint cluster) {
  * FAT[cluster] 保存的是文件/目录簇链中的“下一个簇号”，或者保存 EOC 表示链结束。
  */
 static uint fat16_read_fat(uint cluster) {
-    /*
-     * LAB TODO [1.1]
-     *
-     * 请使用bread()读取FAT表并解析出FAT[cluster]的值
-     */
-    /* LAB TODO [1.1] BEGIN */
+    uint byteoff = cluster * 2;         // 每个 FAT 表项占 2B
+    uint sector = byteoff / BSIZE;      // 确定目标表项位于 FAT 表的第几个扇区
+    uint offset = byteoff % BSIZE;      // 确定目标表项在该扇区内的偏移量
 
-    panic("fat16_read_fat: not implemented");
-
-    uint fat_value = 0;
-
-
-
-    
-
+    struct buf *b = bread(meta.dev, meta.fat_sec + sector); // 读取目标扇区数据
+    uint fat_value = get16((uchar *)b->data + offset);      // 在目标扇区中读取目标表项的值
+    brelse(b);  // bread 后释放锁，此后 b 不能再使用
     return fat_value;
-    /* LAB TODO [1.1] END */
 }
 
 // 将FAT表中索引为cluster的项的值设置为value，即FAT[cluster] = value
