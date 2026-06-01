@@ -1800,124 +1800,97 @@ int fat16fs_set_keywords(const char *path, const char *keywords) {
 
     uint old_sector = std_slot.sector;
     uint old_offset = std_slot.offset;
-    uint old_std_index = std_slot.index;
+    uint old_std_index = std_slot.index;    // 关键词所属的目录项的索引号
     int old_count = fat16_keyword_count_before(dp, old_std_index);
     uint old_start = old_std_index - (uint)old_count;
     uint old_total = (uint)old_count + 1;
 
-    /*
-     * LAB TODO [2.2]
-     *
-     * 情况一：新关键词为空
-     *
-     * 需要删除旧关键词占用的 old_count 个槽，但标准文件目录项 std_slot 不移动。
-     */
-    /* LAB TODO [2.2] BEGIN: clear keywords */
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-    /*
-     * 注意（以下 3 个 TODO 均相同）：
-     * 1. 如果你需要做 Bonus，则如果关键词设置成功，必须在返回前使用
-     *    fat16_kw_index_update_file()更新关键词索引，否则新记录不会加入到 B+ 树中
-     * 2. 无论是否做 Bonus，无论关键词是否成功设置，在返回前必须按照下面的代码释放 dp 的锁和引用，
-     *    否则会导致死锁或内存泄漏
-     *    if (need_unlock) {
-     *        fat16fs_iunlock(dp);
-     *    }
-     *    fat16fs_iput(dp);
-     */
-
-    // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
-    if (new_count == 0) {
-        
-
-
-
-
-
-
-
+    if (new_count == 0) {   // 新关键词为空
+        fat16_mark_keyword_entries_before_deleted(dp, old_std_index);   // 删除所有关键词伪目录条目
+        // 更新关键词索引，把新记录加入 B+ 树
+        fat16_kw_index_update_file(old_sector, old_offset, old_sector, old_offset, path, old_keywords, keywords);
+        // 释放 dp 的锁和引用，防止死锁或内存泄漏
+        if (need_unlock) {
+            fat16fs_iunlock(dp);
+        }
+        fat16fs_iput(dp);
+        return 0;
     }
 
-    /* LAB TODO [2.2] END: clear keywords */
-
-    /*
-     * LAB TODO [2.2]
-     *
-     * 情况二：新关键词需要的伪目录项数量不超过旧数量
-     *
-     * 不需要移动标准文件目录项，复用其之前的槽位写入新关键词，其余的删除
-     */
-    /* LAB TODO [2.2] BEGIN: reuse old keyword range */
-
-    if (new_count <= old_count) {
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    if (new_count <= old_count) {   // 新关键词数量小于旧关键词数量
+        uint rstart = old_std_index - new_count;    // 重设关键词伪目录项的起点索引
+        if (fat16_write_keywords_at(dp, rstart, keywords, new_count) < 0) { // 重新写入新关键词
+            // 写入失败，报错返回
+            
+            // 释放 dp 的锁和引用，防止死锁或内存泄漏
+            if (need_unlock) fat16fs_iunlock(dp);
+            fat16fs_iput(dp);
+            return -1;
+        }
+        fat16_mark_range_deleted_except(dp, old_start, old_count, rstart, new_count);   // 删除新关键词伪目录项以外的废弃条目
+        // 更新关键词索引，把新记录加入 B+ 树
+        fat16_kw_index_update_file(old_sector, old_offset, old_sector, old_offset, path, old_keywords, keywords);
+        // 释放 dp 的锁和引用，防止死锁或内存泄漏
+        if (need_unlock) {
+            fat16fs_iunlock(dp);
+        }
+        fat16fs_iput(dp);
+        return 0;
     }
 
-    /* LAB TODO [2.2] END: reuse old keyword range */
+    // 新关键词需要更多伪目录项，原位置放不下
+    uint need = new_count + 1;  // 为了存储更新关键词之后的目录项，需要的连续目录槽数量
+    uint first_index;           // 新找到的连续目录槽起始索引号
+    struct fat16_slot first_slot;
+    if (fat16_find_free_run(dp, need, old_start, old_total, &first_slot, &first_index) < 0) {
+        // 未找到新的可用连续目录槽，报错返回
 
-    /*
-     * LAB TODO [2.2]
-     *
-     * 情况三：新关键词需要更多伪目录项，原位置放不下
-     *
-     * 请使用fat16_find_free_run()寻找一段新的连续槽位来存放新关键词和文件目录项
-     * 如果这个文件的inode被加载到了itable中，你需要更新itable中的inum、sector、offset等信息。
-     */
-    /* LAB TODO [2.2] BEGIN: move entry to larger keyword run */
+        // 释放 dp 的锁和引用，防止死锁或内存泄漏
+        if (need_unlock) {
+            fat16fs_iunlock(dp);
+        }
+        fat16fs_iput(dp);
+        return -1;
+    }
 
+    uint new_std_index = first_index + new_count; // 目录项的新索引号
+    
+    // 写入关键词伪目录项
+    if (fat16_write_keywords_at(dp, first_index, keywords, new_count) < 0) {
+        // 写入失败
+        if (need_unlock) fat16fs_iunlock(dp);
+        fat16fs_iput(dp);
+        return -1;
+    }
+    
+    // 迁移目录项
 
+    // 计算出目录项在磁盘上的新位置并写入
+    struct fat16_slot new_std_slot;
+    fat16_slot_by_index(dp, new_std_index, &new_std_slot);
+    fat16_write_entry(new_std_slot.sector, new_std_slot.offset, &std_slot.entry);
+    
+    // 删除旧目录项中与新目录项不重合的部分
+    fat16_mark_range_deleted_except(dp, old_start, old_total, first_index, need);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    /* LAB TODO [2.2] END: move entry to larger keyword run */
+    // 更新目录项所属的 inode 信息
+    uint old_inum = fat16_slot_inum(old_sector, old_offset);
+    uint new_inum = fat16_slot_inum(new_std_slot.sector, new_std_slot.offset);
+    struct inode *target_ip = fat16_find_loaded(old_inum);  // 查找旧 inode 是否被引用
+    if (target_ip) {
+        // 把指向旧 inode 的引用重定向到新 inode
+        target_ip->inum = new_inum;
+        target_ip->addrs[1] = new_std_slot.sector;
+        target_ip->addrs[2] = new_std_slot.offset;
+    }
+    // 更新关键词索引，把新记录加入 B+ 树
+    fat16_kw_index_update_file(old_sector, old_offset, new_std_slot.sector, new_std_slot.offset, path, old_keywords, keywords);
+    
+    // 释放 dp 的锁和引用，防止死锁或内存泄漏
+    if (need_unlock) {
+        fat16fs_iunlock(dp);
+    }
+    fat16fs_iput(dp);
     return 0;
 }
 
