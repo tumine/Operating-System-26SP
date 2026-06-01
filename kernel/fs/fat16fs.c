@@ -1594,34 +1594,38 @@ static int fat16_find_free_run(struct inode *dp, uint need, uint old_start, uint
         return -1;
     }
 
-    /*
-     * LAB TODO [2.2]
-     *
-     * 请借助fat16_slot_available_for_run()实现这个函数，如果目录空间不足
-     * 就调用fat16_grow_dir()扩大目录后继续查找。
-     */
-    /* LAB TODO [2.2] BEGIN */
     for (;;) {
-        uint nslot = fat16_dir_slot_count(dp);
-        uint run = 0;
-        uint start = 0;
+        uint nslot = fat16_dir_slot_count(dp);  // 当前目录理论可容纳的目录槽（项）数量
+        uint run = 0;                           // 可用连续目录槽数量
+        uint rstart = 0;                        // 连续目录槽的起始槽编号
 
-        // 实现查找长度为 need 的连续可用槽位
+        for (uint i = 0; i < nslot; i++) {
+            if (fat16_slot_available_for_run(dp, i, old_start, old_count)) {
+                // 当前目录项可以用来存放，更新连续目录槽数量
+                if (run == 0) rstart = i;
+                run++;
+                if (run == need) {
+                    // 可用连续目录槽长度符合要求
+                    *first_index = rstart;
+                    if (first_slot) {   // 若提供了 first_slot 指针，则将首目录槽的位置信息写入 first_slot
+                        fat16_slot_by_index(dp, rstart, first_slot);
+                    }
+                    return 0;
+                }
+            }
+            else {
+                // 当前记录的可用连续目录槽长度不足，重置 run 以寻找下一个可能的连续目录槽
+                run = 0;
+            }
+        }
 
-
-
-
-
-
-
-
-
-
-        // if (在这里填写需要增长目录时出现错误的判断条件) {
-        //     return -1;
-        // }
+        // 未能找到长度合适的目录槽，尝试扩容目录
+        if (fat16_grow_dir(dp) < 0) {
+            // 目录扩容失败
+            return -1;
+        }
+        // 目录扩容成功后，重新开始查找满足要求的可用连续长度目录槽
     }
-    /* LAB TODO [2.2] END */
 }
 
 // 写入一个关键词伪目录项，seq是该伪目录项在整个关键词伪目录项序列中的序号，keywords是整个关键词字符串，
