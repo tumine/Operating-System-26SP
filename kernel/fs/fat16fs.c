@@ -1506,22 +1506,28 @@ static int fat16_keyword_entries_needed(const char *keywords) {
  * 因此读取或修改某个文件的关键词时，需要从标准目录项向前扫描，找到属于它的伪目录项数量。
  */
 static int fat16_keyword_count_before(struct inode *dp, uint std_index) {
-    /*
-     * LAB TODO [2.1]
-     *
-     * 提示：fat16_dirent_is_keyword() 只判断目录项是否是本实验定义的关键词伪目录项。
-     */
     int count = 0;
-    /* LAB TODO [2.1] BEGIN */
+    uint idx = std_index;
+    while (idx > 0) {
+        idx--;
+        struct fat16_slot slot;
+        if (fat16_slot_by_index(dp, idx, &slot) < 0) {
+            // 条目定位失败
+            break;
+        }
 
-
-
-
-
-
-
-
-    /* LAB TODO [2.1] END */
+        if (fat16_dirent_is_keyword(&slot.entry)) {
+            // 当前条目是关键词伪目录项
+            count++;
+            if (count >= FAT16_KW_MAX_ENTRIES) {    // 目录条目数过多，截断退出
+                break;
+            }
+        }
+        else {
+            // 如果当前条目不是正常目录项，就退出循环
+            break;
+        }
+    }
     return count;
 }
 
