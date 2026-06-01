@@ -1668,49 +1668,38 @@ static int fat16_read_keywords_before(struct inode *dp, uint std_index, char *bu
         return -1;
     }
     buf[0] = 0;
-    int count = fat16_keyword_count_before(dp, std_index);
+    int count = fat16_keyword_count_before(dp, std_index);  // 获取关键词伪目录项条目数
     if (count == 0) {
         return 0;
     }
 
-    /*
-     * LAB TODO [2.1]
-     *
-     * 使用fat16_slot_by_index()读取count个关键词伪目录项，并用fat16_kw_get_data_byte()取出其中的关键词数据
-     */
-    /* LAB TODO [2.1] BEGIN */
     int out = 0; // out是字符串的长度，不含末尾 '\0'
+    uint start = std_index - count; // 目标目录项所属的关键词伪目录项起始索引
+    // 逐条提取关键词信息
+    for (int i = 0; i < count; i++) {
+        struct fat16_slot slot;
+        if (fat16_slot_by_index(dp, start + i, &slot) < 0) {
+            // 目录项定位失败
+            break;
+        }
+        for (int j = 0; j < FAT16_KW_BYTES_PER_ENTRY; j++) {
+            uchar c = fat16_kw_get_data_byte(&slot.entry, j);   // 在当前伪目录项中逐字节读出数据
+            if (c == 0) {   // 当前关键字结束
+                buf[out] = '\0';
+                return out;
+            }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+            if (out < max - 1) {
+                buf[out++] = (char)c;
+            }
+            else {  // 关键词存储达到最大长度，强制收尾
+                buf[out] = '\0';
+                return out;
+            }
+        }
+    }
+    buf[out] = '\0';
     return out;
-    /* LAB TODO [2.1] END */
 }
 
 // 读取path路径对应的文件的关键词字符串到buf中，max是buf的容量
