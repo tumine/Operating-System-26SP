@@ -152,19 +152,39 @@ struct bptree_values *bptree_lookup(struct bptree *tree, const char *key, int le
 
 static int bptree_split_leaf(struct bptree *tree, struct bptree_node *node,
                              char **promoted, struct bptree_node **right) {
-    (void)tree;
-    (void)node;
-    (void)promoted;
-    (void)right;
+    // 在 B+ 树上分配新叶子节点
+    struct bptree_node *new_node = bptree_new_node(tree, 1);
+    if (new_node == 0) {
+        return -1;
+    }
 
-    /*
-     * LAB BONUS TODO [B.1]
-     *
-     * Split an overflowing leaf node. Move the upper half of keys and posting
-     * lists into a new right leaf, link the leaf chain, and promote the first
-     * key of the right leaf to the parent.
-     */
-    return -1;
+    int split = node->nkey / 2;         // 当前叶子节点中分裂点索引号，split 及以后的 key-value 对移动到分裂后的右节点
+    int rcount = node->nkey - split;    // 右节点中的 key-value 对数量
+    // 逐个迁移右节点中的 key-value 映射关系
+    for (int i = 0; i < rcount; i++) {
+        new_node->keys[i] = node->keys[split + i];
+        new_node->values[i] = node->values[split + i];
+    }
+    new_node->nkey = rcount;            // 右节点中的 key-value 对数量
+    node->nkey = split;                 // 原节点（左节点）的 key-value 对数量
+
+    // 更新叶子节点的链表序
+    new_node->next = node->next;
+    node->next = new_node;
+
+    // 将右节点中的首 key 作为父节点中的分隔指标，提升给父节点
+    int p_len = 0;
+    while (new_node->keys[0][p_len]) {
+        p_len++;
+    }
+    char *p_key = bptree_strdup_key(tree, new_node->keys[0], p_len);    // 复制该 key 用于父节点
+    if (p_key == 0) {
+        return -1;
+    }
+
+    *promoted = p_key;  // 复制到父节点的 key
+    *right = new_node;  // 分裂出的右节点
+    return 0;
 }
 
 static int bptree_split_internal(struct bptree *tree, struct bptree_node *node,
