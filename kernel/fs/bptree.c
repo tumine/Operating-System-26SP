@@ -298,12 +298,31 @@ int bptree_insert(struct bptree *tree, const char *key, int len, void *value) {
         return -1;
     }
 
-    /*
-     * LAB BONUS TODO [B.1]
-     *
-     * Create the root leaf when the tree is empty. Then call bptree_insert_rec().
-     * If the old root splits, allocate a new internal root containing the
-     * promoted separator key and two children.
-     */
-    return -1;
+    // 树为空，则创建一个叶子节点作为根节点
+    if (tree->root == 0) {
+        tree->root = bptree_new_node(tree, 1);
+        if (tree->root == 0) {
+            return -1;
+        }
+    }
+
+    char *promoted = 0;             // 根节点分裂输出，指向用于插入新根节点的 key 的指针
+    struct bptree_node *right = 0;  // 根节点分裂输出，右节点指针
+    // 从根节点开始向下递归调用 bptree_insert_rec 尝试插入传入的 key-value 对
+    int ret = bptree_insert_rec(tree, tree->root, key, len, value, &promoted, &right);
+
+    // 根节点需要进行分裂
+    if (promoted) {
+        struct bptree_node *new_root = bptree_new_node(tree, 0);    // 创建一个新节点作为新的根节点
+        if (new_root == 0) {
+            return -1;
+        }
+        new_root->keys[0] = promoted;
+        new_root->child[0] = tree->root;
+        new_root->child[1] = right;
+        new_root->nkey = 1;
+        tree->root = new_root;              // 更新整棵树的根节点指针
+    }
+
+    return ret;
 }
