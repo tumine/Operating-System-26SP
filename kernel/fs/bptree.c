@@ -216,35 +216,81 @@ static int bptree_split_internal(struct bptree *tree, struct bptree_node *node,
 static int bptree_insert_rec(struct bptree *tree, struct bptree_node *node,
                              const char *key, int len, void *value,
                              char **promoted, struct bptree_node **right) {
-    (void)tree;
-    (void)node;
-    (void)key;
-    (void)len;
-    (void)value;
-    (void)promoted;
-    (void)right;
+    *promoted = 0;
+    *right = 0;
 
-    /*
-     * LAB BONUS TODO [B.1]
-     *
-     * Recursively insert value for key[0..len).
-     *
-     * Leaf case:
-     *   - If the key already exists, append value to its posting list with
-     *     bptree_values_add().
-     *   - Otherwise copy the key with bptree_strdup_key(), insert a new sorted
-     *     leaf entry, and create its posting list.
-     *   - If the leaf overflows, call bptree_split_leaf().
-     *
-     * Internal case:
-     *   - Descend to the correct child.
-     *   - If the child split, insert the promoted separator and right child.
-     *   - If this node overflows, call bptree_split_internal().
-     *
-     * On return, set *promoted and *right when this node split; otherwise set
-     * them to 0.
-     */
-    return -1;
+    // 当前节点是叶子节点
+    if (node->leaf) {
+        // 对当前节点现有的所有 key 从小到大逐个进行比较，找到新 key 应该插入的位置
+        int idx = 0;
+        while (idx < node->nkey && bptree_keycmp_token(node->keys[idx], key, len) < 0) {
+            // 当前索引上的 key < token，继续向下寻找直到找到第一个满足 key >= token 的索引号
+            idx++;
+        }
+
+        // 检查 key 是否已经存在
+        if (idx < node->nkey && bptree_keycmp_token(node->keys[idx], key, len) == 0) {
+            // 若当前的 key 已经存在，只需要添加一条已有 key 到新 value 的映射关系即可
+            bptree_values_add(tree, &node->values[idx], value);
+            return 0;
+        }
+
+        // 把 idx 以后的所有 key-value 对向后迁移
+        for (int i = node->nkey; i > idx; i--) {
+            node->keys[i] = node->keys[i - 1];
+            node->values[i] = node->values[i - 1];
+        }
+
+        // 把新 key 插入当前节点
+        node->keys[idx] = bptree_strdup_key(tree, key, len);
+        if (node->keys[idx] == 0) {
+            // 新节点的空间分配失败
+            return -1;
+        }
+        // 初始化当前 key 的 value 映射关系
+        node->values[idx].count = 0;
+        node->values[idx].head = 0;
+        node->values[idx].tail = 0;
+        bptree_values_add(tree, &node->values[idx], value); // 设置 key-value 映射关系
+        node->nkey++;                                       // 更新当前节点的 key 数量
+
+        // 当前节点的 key 数量过多，需要进行节点分裂
+        if (node->nkey > BPTREE_MAX_KEYS) {
+            return bptree_split_leaf(tree, node, promoted, right);
+        }
+        return 0;
+    }
+    // 当前节点是内部节点
+    else {
+        // 对当前节点现有的所有 key 从小到大逐个进行比较，找到新 key 应该递归插入的位置
+        int idx = 0;
+        while (idx < node->nkey && bptree_keycmp_token(node->keys[idx], key, len) <= 0) {
+            idx++;
+        }
+
+        char *child_promoted = 0;               // 子节点分裂输出，指向用于插入父节点的 key 的指针
+        struct bptree_node *child_right = 0;    // 子节点分裂输出，右节点指针
+        int ret = bptree_insert_rec(tree, node->child[idx], key, len, value,
+                                    &child_promoted, &child_right);
+
+        // 子节点发生分裂，需要将提升上来的 key 插入当前节点
+        if (child_promoted) {
+            // 把 idx 以后的所有 key-value 对向后迁移
+            for (int i = node->nkey; i > idx; i--) {
+                node->keys[i] = node->keys[i - 1];
+                node->child[i + 1] = node->child[i];
+            }
+            node->keys[idx] = child_promoted;   // 新插入的 key 的名称
+            node->child[idx + 1] = child_right; // 维护指向子节点分裂产生的右节点的指针
+            node->nkey++;                       // 更新当前节点的 key 数量
+
+            // 当前节点的 key 数量过多，需要进行节点分裂
+            if (node->nkey > BPTREE_MAX_KEYS) {
+                return bptree_split_internal(tree, node, promoted, right);
+            }
+        }
+        return ret;
+    }
 }
 
 int bptree_insert(struct bptree *tree, const char *key, int len, void *value) {
