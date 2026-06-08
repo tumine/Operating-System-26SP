@@ -137,16 +137,30 @@ struct bptree_values *bptree_lookup(struct bptree *tree, const char *key, int le
         return 0;
     }
 
-    /*
-     * LAB BONUS TODO [B.1]
-     *
-     * Search from tree->root down to a leaf. In each internal node, choose the
-     * child whose key range may contain key[0..len). In the leaf, return the
-     * posting list for an equal key, or 0 when the keyword is absent.
-     *
-     * Hint: bptree_keycmp_token(node->keys[i], key, len) compares a stored
-     * zero-terminated key with a non-zero-terminated token slice.
-     */
+    struct bptree_node *node = tree->root;
+    if (node == 0) {
+        // 空树，一定找不到结果
+        return 0;
+    }
+
+    while (!node->leaf) {
+        // 只要当前节点不是叶子节点，就继续下探
+        int i = 0;
+        // 对当前节点现有的所有 key 从小到大逐个进行比较，找到目标 key 处在哪个子节点
+        while (i < node->nkey && bptree_keycmp_token(node->keys[i], key, len) <= 0) {
+            i++;
+        }
+        node = node->child[i];  // 下探到子节点继续寻找
+    }
+
+    // 到达叶子节点，逐个 key 比对
+    for (int i = 0; i < node->nkey; i++) {
+        if (bptree_keycmp_token(node->keys[i], key, len) == 0) {
+            // 找到 key，返回 value 映射关系
+            return &node->values[i];
+        }
+    }
+    // 未找到 key
     return 0;
 }
 
