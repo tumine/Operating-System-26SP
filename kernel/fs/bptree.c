@@ -189,18 +189,28 @@ static int bptree_split_leaf(struct bptree *tree, struct bptree_node *node,
 
 static int bptree_split_internal(struct bptree *tree, struct bptree_node *node,
                                  char **promoted, struct bptree_node **right) {
-    (void)tree;
-    (void)node;
-    (void)promoted;
-    (void)right;
+    // 在 B+ 树上分配新内部节点
+    struct bptree_node *new_node = bptree_new_node(tree, 0);
+    if (new_node == 0) {
+        return -1;
+    }
 
-    /*
-     * LAB BONUS TODO [B.1]
-     *
-     * Split an overflowing internal node. Promote the middle separator key and
-     * move the keys/children on its right into a new internal node.
-     */
-    return -1;
+    int split = node->nkey / 2;             // 内部节点中的分裂点索引号，split 及以后的 key-child 对移动到分裂后的右节点
+    int rcount = node->nkey - split - 1;    // 右节点中的 key-child 对数量
+    // 逐个迁移右节点中的 key-child 映射关系
+    for (int i = 0; i < rcount; i++) {
+        new_node->keys[i] = node->keys[split + 1 + i];
+        new_node->child[i] = node->child[split + 1 + i];
+    }
+    new_node->child[rcount] = node->child[node->nkey];  // 将原节点最右侧的子节点指针迁移到右节点中
+    new_node->nkey = rcount;
+
+    char *p_key = node->keys[split];    // 取原节点分裂点处的 key 用于父节点
+    node->nkey = split;
+
+    *promoted = p_key;
+    *right = new_node;
+    return 0;
 }
 
 static int bptree_insert_rec(struct bptree *tree, struct bptree_node *node,
