@@ -446,13 +446,11 @@ static int run_batched_inference(struct daemon_runtime *dr,
     // 流水线执行
     for (int layer = 0; layer < n_layers; layer++) {
         int slot = layer % n_slots;
-
         // 测量计算时间
         int t1 = uptime();
         compute_layer_batch(dr, slot, bg);
         int t2 = uptime();
         total_compute_ticks += (t2 - t1);
-
         // 测量 I/O 时间（异步提交 → 等待完成）
         int next_layer = layer + n_slots;
         if (next_layer < n_layers) {
@@ -612,7 +610,6 @@ static int has_suspended_request(struct daemon_runtime *dr) {
     return 0;
 }
 ```
-> 
 > 当 `async_raw_write` 和专用交换磁盘分区可用后，可将 `open/write` 替换为 `async_raw_write`，
 > `open/read` 替换为 `async_raw_read`，从而绕过 `bio.c` 避免缓存污染。
 
