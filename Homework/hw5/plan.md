@@ -2,7 +2,7 @@
 
 ## 一、问题定义与背景
 
-在端侧部署大语言模型（如 SmolLM2-135M）时，模型权重通常按层载入内存用于计算，其余层的权重存放于磁盘交换空间。在 Lab 2 实现中，`ai_daemon` 在启动时通过 `load_file()` 将**所有权重文件**一次性读入用户态内存。在模型较小时，内存通常可以满足这种实现方案；但若模型参数量较大，就会遇到内存容量不足的问题，必须采用将部分权重调入内存的实现方案，由此在大语言模型计算过程中引入了 I/O 和其优化问题。
+在端侧部署大语言模型时，模型权重通常按层载入内存用于计算，其余层的权重存放于磁盘交换空间。在 Lab 2 实现中，`ai_daemon` 在启动时通过 `load_file()` 将**所有权重文件**一次性读入用户态内存。在模型较小时，内存通常可以满足这种实现方案；但若模型参数量较大，就会遇到内存容量不足的问题，必须采用将部分权重调入内存的实现方案，由此在大语言模型计算过程中引入了 I/O 和其优化问题。
 
 本设计的目标是：在 NexOS 现有架构上，设计一套**权重复用 + DMA 双缓冲流水线 + Raw I/O 绕过文件系统缓存**的协同优化方案，使每次权重加载能服务更多计算工作，平衡 CPU 与 I/O 利用率，最大化推理吞吐率。
 
@@ -17,7 +17,7 @@
 
 #### 2.2 Raw I/O 绕过文件系统缓存
 
-在权重加载场景下，文件系统提供的服务可能反而会对 I/O 性能造成拖累。具体来说，在现有的文件读取路径 `fileread → readi_user → bread → virtio_disk_rw` 中，`bread()` 会将数据缓存到 `bio.c` 的 30 个 `buf` 中。对于大模型权重这种一次性大批量顺序读取的场景，块缓存不仅无用（LRU 会立即淘汰），还浪费内存并引入额外拷贝。
+在权重加载场景下，**文件系统提供的服务可能反而会对 I/O 性能造成拖累**。具体来说，在现有的文件读取路径 `fileread → readi_user → bread → virtio_disk_rw` 中，`bread()` 会将数据缓存到 `bio.c` 的 30 个 `buf` 中。对于大模型权重读取场景（一次性、大批量、顺序读取），块缓存不仅未起到性能优化作用，还会导致内存的额外浪费。
 
 **核心思想**：**新增系统调用** `sys_async_raw_read`，直接将磁盘扇区数据通过 VirtIO virtqueue DMA 传输到用户态预分配的锁页内存中，完全绕过 `bio.c` 缓存层。
 
@@ -46,11 +46,11 @@
 
 **KV Cache 换页**：
 
-当并发请求的 KV Cache 总量超过分配给请求 KV Cache 的可用内存总量时，需要把暂时不参与计算的“冷请求”的 KV Cache 写到磁盘上，把内存资源让给正在计算的“热请求”，在这些冷请求恢复计算时再将它们的 KV Cache 从磁盘读回。
+当并发请求的 KV Cache 总量超过分配给请求 KV Cache 的可用内存总量时，需要**把暂时不参与计算的“冷请求”的 KV Cache 迁移到交换分区**，把内存资源让给正在计算的“热请求”，在这些冷请求恢复计算时再将它们的 KV Cache 从磁盘交换分区读回。
 
 在现有 NexOS 上的具体实现方式如下：
 
-1. **内存预算与水位线**：`ai_daemon` 启动时根据 `sbrk(0)` 获得当前可用堆大小，扣除模型权重和工作区后设定 KV Cache 内存预算 `KV_MEM_BUDGET`（例如 32MB）。每个请求的 KV Cache 占用 `kv_cache_elems × sizeof(float) × 2`（k+v，SmolLM2 约 11.8MB），因此最大并发数 `max_concurrent = KV_MEM_BUDGET / (kv_cache_elems × sizeof(float) × 2)`。当活跃请求的 KV Cache 总量达到 `max_concurrent` 时，触发换页。
+1. **内存预算与水位线**：`ai_daemon` 启动时根据 `sbrk(0)` 获得当前可用堆大小，扣除模型权重和工作区后设定 KV Cache 内存配额 `KV_MEM_BUDGET`。每个请求的 KV Cache 占用 `kv_cache_elems × sizeof(float) × 2`（k+v，SmolLM2 约 11.8MB），因此最大并发数 `max_concurrent = KV_MEM_BUDGET / (kv_cache_elems × sizeof(float) × 2)`。当活跃请求的 KV Cache 总量达到 `max_concurrent` 时，触发换页。
 
 2. **冷请求选择**：调度器维护每个活跃请求的 `access_score`（最近一次参与计算的时间戳，用 `uptime()` 记录）。当需要腾出内存空间，按照 **LRU 算法**选择 `access_score` 最小（即最久没被计算过）的请求作为换出对象。被换出的请求状态从 `DECODE` 切换为 `SUSPENDED`。
 
@@ -61,7 +61,6 @@
    - `close(fd)` 关闭文件
    - 在 `kv_swap_meta[req_id]` 中记录文件路径和 `in_ram = 0`
    - `memset(kcache[slot], 0, ...)` 清空 DRAM 中的 KV Cache，释放该槽位
-   - 这与现有的 `prefix_cache_save_after_prefill()` 将 kcache/vcache 拷贝到 `cached_kcache`/`cached_vcache` 的逻辑结构完全一致，只是目标从内存缓冲区换成了磁盘文件。
 
 4. **换入过程（读盘）**：当 `SUSPENDED` 状态的请求被调度器选中恢复计算时：
    - 分配一个空闲的 KV Cache 槽位
@@ -70,7 +69,6 @@
    - `read(fd, vcache[slot], kv_cache_elems × sizeof(float))` 读回 V Cache
    - `close(fd)` 后 `unlink("/AI/SWAP/req_<id>.kv")` 删除交换文件
    - 更新 `kv_swap_meta[req_id].in_ram = 1`，请求状态切回 `DECODE`
-   - 这与现有的 `prefix_cache_try_restore()` 从 `cached_kcache`/`cached_vcache` 恢复到 `kcache`/`vcache` 的逻辑结构一致，只是数据源从内存换成了磁盘文件。
 
 5. **与批处理调度的协同**：调度器在每个批次结束后的**批次间隙**检查内存水位。若超过高水位，立即换出最冷的请求；若低于低水位，尝试换入一个处于 `SUSPENDED` 状态的请求。
 
