@@ -1,4 +1,4 @@
-# 端侧大模型权重高效利用的系统设计与 NexOS 实现方案
+## 端侧大模型权重高效利用的系统设计与 NexOS 上实现方案
 
 ## 一、问题定义与背景
 
@@ -167,25 +167,42 @@ int poll_io_done(int chan_id);  // 阻塞等待指定IO完成
 #### 3.3.1 内核：异步 Raw I/O 实现
 
 ```c
-// kernel/core/raw_io.c (新增文件)
+// kernel/core/raw_io.c（新增文件）
 
 // 异步 Raw 读：绕过 bio.c 缓存，直接提交 virtio 请求
+// 注：struct buf 的 data 字段为内联数组 uchar data[BSIZE]，不可被重新赋值。
+// 本设计中的完整实现要求修改 virtio 驱动使描述符 addr 直接指向用户态锁页内存
+// 物理地址（见 4.2 真零拷贝 DMA）；当前 NexOS 的软件模拟方案为：
+// 先通过 virtio_disk_rw 将数据 DMA 到内核临时 buf，再 copyout 到用户态，
+// 以此绕过 bcache 但保留一次内核→用户拷贝。
 int sys_async_raw_read(uint64 paddr, uint64 disk_lba, uint64 size, int chan_id) {
     struct proc *p = myproc();
     // 校验：paddr 必须页对齐、size 必须为 BSIZE 整数倍
     if (paddr % PGSIZE != 0 || size % BSIZE != 0) return -1;
 
-    // 构造一个临时 buf 结构，但不走 bcache
+    // 分配内核临时缓冲区（绕过 bcache，不走 bread/brelse）
+    uchar *kbuf = kalloc();
+    if (kbuf == 0) return -1;
+    memset(kbuf, 0, BSIZE);
+
+    // 构造一个临时 buf 结构，不走 bcache，直接提交 virtio 请求
     struct buf tmp;
+    memset(&tmp, 0, sizeof(tmp));
     tmp.blockno = disk_lba / (BSIZE / 512);
-    tmp.data = (uchar *)paddr;  // 直接指向锁页内存物理地址
+    // tmp.data 为内联数组，DMA 目标为 kbuf；
+    // 未来真零拷贝方案中可将 DMA 目标直接设为用户态锁页物理地址
+    memmove(tmp.data, kbuf, BSIZE);
 
     // 提交到 virtio virtqueue，但不阻塞等待
-    // 需要 virtio_disk.c 新增异步提交接口 virtio_disk_rw_async()
+    // 需要 virtio_disk.c 新增异步提交接口 virtio_disk_submit_async()
     int desc_idx = virtio_disk_submit_async(&tmp, 0 /*read*/);
+    if (desc_idx < 0) { kfree(kbuf); return -1; }
 
     // 注册完成回调：中断到来时 wakeup(chan_id)
     register_io_completion(desc_idx, chan_id);
+
+    // 完成回调中负责：DMA 完成后将 kbuf 内容 copyout 到 paddr 对应的用户虚拟地址，
+    // 然后 kfree(kbuf)。（软件模拟阶段存在一次内核→用户拷贝）
     return 0;  // 立即返回，不阻塞
 }
 
@@ -223,7 +240,7 @@ int sys_alloc_pinned(uint64 size, uint64 alignment, uint64 handle_uva) {
     uint64 vaddr = p->sz;
     p->sz += npages * PGSIZE;
 
-    // 分配物理页并映射(标记 PTE_D=不可换出，NexOS当前无swap但预留)
+    // 分配物理页并映射（标记 PTE_D=不可换出，NexOS当前无swap但预留）
     for (uint64 i = 0; i < npages; i++) {
         void *mem = kalloc();
         if (mem == 0) { /* 回滚已分配页 */ return -1; }
@@ -273,7 +290,7 @@ static void init_kv_memory_budget(struct daemon_runtime *dr) {
 }
 
 // ========== 循环队列（含互斥信号量） ==========
-// idea(2.1): 每个缓冲区使用互斥信号量上锁
+// 每个缓冲区使用互斥信号量上锁
 static int weight_ringbuffer_init(struct daemon_runtime *dr, int n_slots) {
     struct ring_buffer_io *rb = &dr->weight_rbuf;
     rb->n_slots = n_slots;
@@ -291,7 +308,7 @@ static int weight_ringbuffer_init(struct daemon_runtime *dr, int n_slots) {
 }
 
 // 生产者：异步加载指定层权重到指定缓冲区槽位
-// idea(2.1): 提交后立即返回，不阻塞
+// 提交后立即返回，不阻塞
 static int prefetch_layer_async(struct daemon_runtime *dr, int layer_idx, int slot) {
     struct ring_buffer_io *rb = &dr->weight_rbuf;
     uint64 lba = compute_layer_lba(&dr->rt.cfg, layer_idx);
@@ -311,7 +328,7 @@ static int prefetch_layer_async(struct daemon_runtime *dr, int layer_idx, int sl
 }
 
 // 消费者：等待指定槽位就绪并执行批量计算
-// idea(2.3): 对批内所有请求，只加载一次该层权重
+// 对批内所有请求，只加载一次该层权重
 static int compute_layer_batch(struct daemon_runtime *dr, int slot,
                                struct batch_group *bg) {
     struct ring_buffer_io *rb = &dr->weight_rbuf;
@@ -327,7 +344,7 @@ static int compute_layer_batch(struct daemon_runtime *dr, int slot,
                             compute_layer_bytes(&dr->rt.cfg),
                             &dr->rt.cfg, dr->rt.layer_kinds[layer]);
 
-    // idea(2.3): 对批内所有请求复用同一份权重
+    // 对批内所有请求复用同一份权重
     for (int i = 0; i < bg->n_reqs; i++) {
         // 每个请求使用自己独立的 kcache/vcache
         llm_apply_full_layer(&dr->rt, bg->kcache[i], bg->vcache[i], layer,
@@ -340,7 +357,7 @@ static int compute_layer_batch(struct daemon_runtime *dr, int slot,
 }
 
 // ========== ai_service 扩展：非阻塞出队（调度器对接） ==========
-// idea(2.3.4): ai_worker_try_get()——队列空时立即返回-1，不sleep
+// ai_worker_try_get()——队列空时立即返回-1，不sleep
 // 需在 kernel/core/ai_service.c 中实现：
 // int ai_service_worker_try_get(uint64 token_uva, int cap, uint64 reqid_uva,
 //                               uint64 predict_uva) {
@@ -363,8 +380,8 @@ static int ai_worker_try_get(uint32 *tokens, int cap, int *reqid, int *predict) 
 }
 
 // ========== 批次组装 ==========
-// idea(2.3.4): 先用 ai_worker_get 阻塞等第一个请求，
-//             再用 ai_worker_try_get 填满 batch_size-1 个
+// 先用 ai_worker_get 阻塞等第一个请求，
+// 再用 ai_worker_try_get 填满 batch_size-1 个
 static int assemble_batch(struct daemon_runtime *dr, struct batch_group *bg) {
     memset(bg, 0, sizeof(*bg));
 
@@ -373,12 +390,12 @@ static int assemble_batch(struct daemon_runtime *dr, struct batch_group *bg) {
                           &bg->req_ids[0], &dr->req_predict[0]);
     if (n <= 0) return -1;
     bg->req_positions[0] = 0;
-    // idea(2.3.5): 为第一个请求分配独立 kcache/vcache
+    // 为第一个请求分配独立 kcache/vcache
     bg->kcache[0] = dr->kcache_pool[0];
     bg->vcache[0] = dr->vcache_pool[0];
     bg->n_reqs = 1;
 
-    // idea(2.3.4): 非阻塞尝试填满至 g_batch_size
+    // 非阻塞尝试填满至 g_batch_size
     for (int i = 1; i < g_batch_size; i++) {
         n = ai_worker_try_get(dr->req_tokens[i], AI_DAEMON_TOKEN_MAX,
                               &bg->req_ids[i], &dr->req_predict[i]);
@@ -400,14 +417,13 @@ static int assemble_batch(struct daemon_runtime *dr, struct batch_group *bg) {
 }
 
 // ========== 自适应批量调整 ==========
-// idea(2.3.1) + idea(2.3.2) + idea(2.3.3)
 static void adapt_batch_size(int compute_ticks, int io_ticks) {
     if (io_ticks <= 0) return;                    // 避免除零
     float ratio = (float)compute_ticks / (float)io_ticks;
-    // idea(2.3.2): 指数移动平均
+    // 指数移动平均
     g_ema_ratio = 0.8f * g_ema_ratio + 0.2f * ratio;
 
-    // idea(2.3.3): 动态调整
+    // 动态调整
     if (g_ema_ratio > 1.5f && g_batch_size > 1) {
         g_batch_size--;
     } else if (g_ema_ratio < 0.7f && g_batch_size < AI_NREQ) {
@@ -433,13 +449,13 @@ static int run_batched_inference(struct daemon_runtime *dr,
     for (int layer = 0; layer < n_layers; layer++) {
         int slot = layer % n_slots;
 
-        // idea(2.3.1): 测量计算时间
+        // 测量计算时间
         int t1 = uptime();
         compute_layer_batch(dr, slot, bg);
         int t2 = uptime();
         total_compute_ticks += (t2 - t1);
 
-        // idea(2.3.1): 测量 I/O 时间（异步提交 → 等待完成）
+        // 测量 I/O 时间（异步提交 → 等待完成）
         int next_layer = layer + n_slots;
         if (next_layer < n_layers) {
             int t3 = uptime();
@@ -453,27 +469,27 @@ static int run_batched_inference(struct daemon_runtime *dr,
         }
     }
 
-    // idea(2.3.1)(2.3.3): 依据本轮测量结果调整下一批的大小
+    // 依据本轮测量结果调整下一批的大小
     adapt_batch_size(total_compute_ticks, total_io_ticks);
 
     // 更新活跃请求计数和内存用量
     g_active_reqs -= bg->n_reqs;
     g_kv_mem_used  -= bg->n_reqs * (int)(dr->kv_cache_elems * sizeof(float) * 2);
 
-    // idea(2.3.5)(KV换页): 批次间隙检查内存水位
+    // 批次间隙检查内存水位
     check_watermark_and_swap(dr);
 
     return 0;
 }
 
-// idea(2.3.5)(KV换页): 批次间隙的水位检查
+// 批次间隙的水位检查
 static void check_watermark_and_swap(struct daemon_runtime *dr) {
     if (g_active_reqs >= g_max_concurrent) {
         // 超过高水位：选出最冷的请求换出
         int cold_id = select_coldest_request(dr);
         if (cold_id >= 0)
             kv_cache_swap_out(dr, cold_id);
-    } else if (g_active_reqs < g_max_concurrent / 2 && has_suspended_request()) {
+    } else if (g_active_reqs < g_max_concurrent / 2 && has_suspended_request(dr)) {
         // 低于低水位：换入一个挂起请求
         int next_id = select_next_suspended(dr);
         if (next_id >= 0)
@@ -484,15 +500,11 @@ static void check_watermark_and_swap(struct daemon_runtime *dr) {
 
 #### 3.3.4 KV Cache 换页（文件系统方案 + LRU 淘汰）
 
-以下实现与 Part 2 第 2.3 节"KV Cache 换页"子节的 5 点描述一一对应。
-当前代码直接使用 NexOS 现有的文件系统接口（open / write / read / close / unlink），
-未来可升级为 Raw I/O（见 3.3.6）。
-
 ```c
 // user/ai_daemon.c - KV Cache 换页
 
 // ========== 辅助：选择最冷的请求（LRU） ==========
-// idea(2.3.KV.2): 按 access_score 选择最久没使用的请求
+// 按 access_score 选择最久没使用的请求
 static int select_coldest_request(struct daemon_runtime *dr) {
     int coldest_id = -1;
     float min_score = (float)(1 << 30);
@@ -506,7 +518,7 @@ static int select_coldest_request(struct daemon_runtime *dr) {
     return coldest_id;    // 返回最久未访问的请求 id
 }
 
-// idea(2.3.KV.2): 每个批次计算后更新 access_score
+// 每个批次计算后更新 access_score
 static void update_access_score(struct daemon_runtime *dr, int req_id) {
     struct kv_swap_meta *m = find_kv_meta(dr, req_id);
     if (m != NULL) {
@@ -515,7 +527,6 @@ static void update_access_score(struct daemon_runtime *dr, int req_id) {
 }
 
 // ========== 换出：LRU 选择 + 文件写盘 ==========
-// idea(2.3.KV.1) + idea(2.3.KV.2) + idea(2.3.KV.3)
 static int kv_cache_swap_out(struct daemon_runtime *dr, int req_id) {
     struct kv_swap_meta *meta = find_kv_meta(dr, req_id);
     if (meta == NULL || !meta->in_ram) return -1;
@@ -524,21 +535,21 @@ static int kv_cache_swap_out(struct daemon_runtime *dr, int req_id) {
     uint64 kv_bytes = dr->kv_cache_elems * sizeof(float);
     char path[64];
 
-    // idea(2.3.KV.3): 创建交换文件
+    // 创建交换文件
     snprintf(path, sizeof(path), "/AI/SWAP/req_%d.kv", req_id);
     int fd = open(path, O_CREATE | O_WRONLY);
     if (fd < 0) return -1;
 
-    // idea(2.3.KV.3): 写出 K Cache → V Cache
+    // 写出 K Cache → V Cache
     if (write(fd, (void *)dr->kcache_pool[slot], (int)kv_bytes) < 0) goto fail;
     if (write(fd, (void *)dr->vcache_pool[slot], (int)kv_bytes) < 0) goto fail;
     close(fd);
 
-    // idea(2.3.KV.3): 更新元数据
+    // 更新元数据
     strcpy(meta->filepath, path);
     meta->in_ram = 0;
 
-    // idea(2.3.KV.3): 清空 DRAM 中的 KV Cache
+    // 清空 DRAM 中的 KV Cache
     memset(dr->kcache_pool[slot], 0, (uint)kv_bytes);
     memset(dr->vcache_pool[slot], 0, (uint)kv_bytes);
 
@@ -553,14 +564,13 @@ fail:
 }
 
 // ========== 换入：文件读盘 + 恢复 ==========
-// idea(2.3.KV.4)
 static int kv_cache_swap_in(struct daemon_runtime *dr, int req_id) {
     struct kv_swap_meta *meta = find_kv_meta(dr, req_id);
     if (meta == NULL || meta->in_ram) return -1;
 
     uint64 kv_bytes = dr->kv_cache_elems * sizeof(float);
 
-    // idea(2.3.KV.4): 分配空闲槽位
+    // 分配空闲槽位
     int slot = find_free_kv_slot(dr);
     if (slot < 0) {
         // 所有槽位都被占用，先换出最冷的
@@ -569,22 +579,22 @@ static int kv_cache_swap_in(struct daemon_runtime *dr, int req_id) {
         slot = find_free_kv_slot(dr);
     }
 
-    // idea(2.3.KV.4): 打开交换文件
+    // 打开交换文件
     char path[64];
     snprintf(path, sizeof(path), "/AI/SWAP/req_%d.kv", req_id);
     int fd = open(path, O_RDONLY);
     if (fd < 0) return -1;
 
-    // idea(2.3.KV.4): 读回 K Cache → V Cache
+    // 读回 K Cache → V Cache
     int r1 = read(fd, (void *)dr->kcache_pool[slot], (int)kv_bytes);
     int r2 = read(fd, (void *)dr->vcache_pool[slot], (int)kv_bytes);
     if (r1 < 0 || r2 < 0) { close(fd); return -1; }
 
-    // idea(2.3.KV.4): 关闭并删除交换文件
+    // 关闭并删除交换文件
     close(fd);
     unlink(path);
 
-    // idea(2.3.KV.4): 更新元数据
+    // 更新元数据
     meta->in_ram = 1;
     meta->slot_index = slot;
     meta->filepath[0] = '\0';
@@ -595,7 +605,7 @@ static int kv_cache_swap_in(struct daemon_runtime *dr, int req_id) {
 }
 
 // ========== 查询是否有挂起的请求（辅助 low-watermark 判断） ==========
-static int has_suspended_request(void) {
+static int has_suspended_request(struct daemon_runtime *dr) {
     // 遍历 kv_swap_table，检查是否存在 in_ram==0 的条目
     for (int i = 0; i < AI_NREQ; i++) {
         if (!dr->kv_swap_table[i].in_ram && dr->kv_swap_table[i].req_id > 0)
@@ -604,14 +614,13 @@ static int has_suspended_request(void) {
     return 0;
 }
 ```
-> **注意**：上述实现使用标准的文件 I/O（`open/write/read/close/unlink`），完全在现有 NexOS 上可运行。
+> 
 > 当 `async_raw_write` 和专用交换磁盘分区可用后，可将 `open/write` 替换为 `async_raw_write`，
-> `open/read` 替换为 `async_raw_read`，从而绕过 `bio.c` 避免缓存污染（见 3.3.6）。
+> `open/read` 替换为 `async_raw_read`，从而绕过 `bio.c` 避免缓存污染。
 
 #### 3.3.5 内核：virtio_disk 中断回调（异步完成通知）
 
-idea(2.1): "完成后通过中断回调通知"——需修改 `virtio_disk_isr()` 和 `complete_used_locked()`，
-使其在完成描述符链后唤醒**指定的 chan**，而非通用 `b` 指针。
+修改 `virtio_disk_isr()` 和 `complete_used_locked()`，使其在完成描述符链后唤醒指定的 `chan`，而非通用 `b` 指针。
 
 ```c
 // kernel/drivers/virtio_disk.c 扩展
@@ -635,7 +644,7 @@ void register_io_completion(int desc_idx, int chan_id) {
     }
 }
 
-// 修改 virtio_disk_isr()——idea(2.1): 中断回调通知
+// 中断回调通知
 void virtio_disk_isr(void) {
     acquire(&disk.vdisk_lock);
     *R(VIRTIO_MMIO_INTERRUPT_ACK) = *R(VIRTIO_MMIO_INTERRUPT_STATUS) & 0x3;
@@ -643,7 +652,7 @@ void virtio_disk_isr(void) {
     complete_used_locked();       // 现有逻辑：释放完成描述符
     release(&disk.vdisk_lock);
 
-    // idea(2.1): 额外遍历 io_completions 表，wakeup 对应的 chan
+    // 额外遍历 io_completions 表，wakeup 对应的 chan
     acquire(&disk.vdisk_lock);
     for (int i = 0; i < NUM; i++) {
         if (io_completions[i].active && disk.info[i].status == 0) {
@@ -671,15 +680,14 @@ int sys_poll_io_done(int chan_id) {
     return 0;
 }
 ```
-> **说明**：这部分修改属于"需 NexOS 未来支持"的异步 I/O 重构（见第四部分 5.2）。
 > 在当前 NexOS 上，可以通过同步 `virtio_disk_rw()` + 用户态多线程模拟异步语义来验证上层逻辑。
 
-#### 3.3.6 内核：Raw I/O 版本 KV Cache 换页（备选升级方案）
+#### 3.3.6 内核：Raw I/O 版本 KV Cache 换页
 
-当 `async_raw_read`/`async_raw_write` 可用后，用以下替换 3.3.4 中的文件 I/O 路径：
+`async_raw_read`/`async_raw_write` 可用后的文件 I/O 路径。
 
 ```c
-// idea(2.2): Raw I/O 换出——绕过文件系统和 bio.c，直接 DMA
+// Raw I/O 换出——绕过文件系统和 bio.c，直接 DMA
 static int kv_cache_swap_out_raw(struct daemon_runtime *dr, int req_id) {
     struct kv_swap_meta *meta = find_kv_meta(dr, req_id);
     int slot = meta->slot_index;
@@ -698,7 +706,7 @@ static int kv_cache_swap_out_raw(struct daemon_runtime *dr, int req_id) {
     return 0;
 }
 
-// idea(2.2): Raw I/O 换入
+// Raw I/O 换入
 static int kv_cache_swap_in_raw(struct daemon_runtime *dr, int req_id) {
     struct kv_swap_meta *meta = find_kv_meta(dr, req_id);
     int slot = find_free_kv_slot(dr);
@@ -714,29 +722,29 @@ static int kv_cache_swap_in_raw(struct daemon_runtime *dr, int req_id) {
 }
 ```
 
-## 四、实现边界分析：当前可实现 vs. 需未来支持
+## 四、实现边界分析
 
-### 5.1 可基于当前 NexOS 实现的部分
+### 4.1 可基于当前 NexOS 实现的部分
 
-| 模块 | 可实现内容 | 依据 |
+| 模块 | 可实现内容 | 备注 |
 |:---|:---|:---|
-| **请求调度与状态管理** | 批处理调度器、并发度自适应、请求状态机扩展 | `ai_service.c` 已有 8 槽请求队列和完整状态机，可直接扩展 `batch_group` 字段 |
-| **权重复用** | 多请求共享同一次权重前向传播 | `ai_daemon.c` 的 `run_decode_steps()` 已按层循环，可改为对多请求批量执行 `llm_apply_full_layer` |
-| **前缀缓存复用** | 多请求前缀匹配与 KV Cache 复用 | `ai_daemon.c` 已实现 `daemon_prefix_cache`，可扩展为多请求共享 |
-| **Raw I/O 旁路 (软件模拟)** | 新增系统调用绕过 `bio.c`，直接调用 `virtio_disk_rw` | `virtio_disk.c` 已暴露 `virtio_disk_rw()`，可构造临时 `buf` 直接调用，跳过 `bread/brelse` |
-| **双缓冲流水线 (软件模拟)** | 循环队列结构、生产者-消费者同步、层组预取逻辑 | 使用 `sbrk` 分配用户态内存模拟锁页内存，通过 `sleep/wakeup` 实现同步 |
-| **KV Cache 换页 (逻辑)** | 元数据管理、淘汰决策、通过文件系统写入 | `ai_daemon.c` 的 `prefix_cache_save_after_prefill` 已有 KV Cache 序列化的雏形 |
+| **请求调度与状态管理** | 批处理调度器、并发度自适应、请求状态机扩展 | `ai_service.c` 实现 8 槽请求队列和完整状态机，可扩展 `batch_group` 等字段 |
+| **权重复用** | 多请求共享同一次权重前向传播 | `ai_daemon.c` 中 `run_decode_steps()` 采用按层循环的模式，可改为对多请求批量执行 `llm_apply_full_layer` |
+| **前缀缓存复用** | 多请求前缀匹配与 KV Cache 复用 | `ai_daemon.c` 实现 `daemon_prefix_cache`，可扩展为多请求共享 |
+| **Raw I/O 旁路（软件模拟）** | 新增系统调用绕过 `bio.c`，直接调用 `virtio_disk_rw` | `virtio_disk.c` 已实现 `virtio_disk_rw()`，可构造临时 `buf` 结构直接调用该函数以绕过 `bread/brelse`。在软件模拟阶段，使用同步的 `virtio_disk_rw`（先通过 DMA 拷贝到内核临时缓冲区，再 copyout 到用户态）；实现异步 I/O 与真零拷贝 DMA 后，可替换为 `virtio_disk_submit_async`（通过 DMA 直接拷贝到用户态） |
+| **双缓冲流水线（软件模拟）** | 循环队列结构、生产者-消费者同步、层组预取逻辑 | 使用 `sbrk` 分配用户态内存模拟锁页内存，通过 `sleep/wakeup` 实现同步 |
+| **KV Cache 换页（逻辑）** | 元数据管理、淘汰决策、通过文件系统写入 | `ai_daemon.c` 的 `prefix_cache_save_after_prefill` 已有 KV Cache 序列化的雏形 |
 | **系统调用扩展** | 新增 `sys_alloc_pinned`、`sys_async_raw_read` 等 | `syscall.c` 已有清晰的系统调用分发机制，新增条目即可 |
-| **页表操作** | 获取物理地址、建立映射 | `vm.c` 的 `walk()`、`walkaddr()`、`mappages()` 可直接使用 |
+| **页表操作** | 获取物理地址、建立映射 | `vm.c` 中 `walk()`、`walkaddr()`、`mappages()` 可直接使用 |
 
-### 5.2 需要 NexOS 未来进一步支持的部分
+### 4.2 需要 NexOS 未来进一步支持的部分
 
 | 模块 | 限制 | 需要的支持 |
 |:---|:---|:---|
 | **真正的异步 I/O** | `virtio_disk_rw()` 当前同步阻塞，提交后 `sleep(b)` 等待完成 | 需将 `virtio_disk.c` 重构为异步提交 + 中断回调模式，`virtio_disk_isr()` 中 `wakeup` 指定 `chan` 而非通用 `b` |
 | **真零拷贝 DMA** | 当前 virtio 描述符指向 `b->data`（内核缓存），非用户态物理地址 | 需修改 virtio 驱动，使描述符 `addr` 直接指向用户态锁页内存物理地址，绕过内核 `buf` 中间层 |
 | **物理连续内存分配** | `kalloc()` 分配单页 (4KB)，无法保证多页连续 | 需实现连续物理页分配器（类似 `__get_free_pages`），或使用散列-收集 (scatter-gather) 描述符链 |
-| **锁页内存 (Pinned Memory)** | NexOS 无 swap 机制，所有内存隐式"锁定"，但无显式标记 | 虽然功能上等价，但未来若引入 swap 需添加 `PTE_D` (dirty/non-pageable) 标志位 |
+| **锁页内存（Pinned Memory）** | NexOS 无 swap 机制，所有内存隐式"锁定"，但无显式标记 | 虽然功能上等价，但未来若引入 swap 需添加 `PTE_D` (dirty/non-pageable) 标志位 |
 | **NPU/Tensor Core 加速** | 矩阵乘法在 CPU 上用 `qmatmul` 软件执行，$T_{compute} \gg T_{io}$ | 需 NPU 驱动支持，否则双缓冲流水线在 CPU 模拟下无法体现"计算掩盖 I/O"效果 |
 | **磁盘分区管理** | 当前只有一个 virtio block 设备，无分区概念 | 需要支持磁盘分区或第二块专用块设备，用于权重 Raw I/O 与 KV Cache swap 分区 |
 | **真实 DMA 总线竞争** | QEMU 模拟环境下 DMA 与 CPU 共享内存总线的行为与真实 SoC 不同 | 需真实端侧硬件 (如带 NPU 的 ARM SoC) 验证 UMA 总线竞争效应 |
@@ -747,24 +755,11 @@ static int kv_cache_swap_in_raw(struct daemon_runtime *dr, int req_id) {
 
 | 编号 | 论文/系统 | 核心借鉴点 |
 |:---|:---|:---|
-| 1 | **LLM in a flash** (Alizadeh et al., arXiv:2312.11514) | 上下文稀疏性预测、滑动窗口内存管理、行列捆绑布局优化 DMA 传输效率 |
-| 2 | **ActiveFlow / Active-Weight Swapping** (arXiv:2504.08378) | 活跃权重 DRAM-Flash 交换流水线、层组 (Layer Group) 预取机制、锁页内存作为 DMA 目标 |
-| 3 | **KVSwap** (arXiv:2511.11907) | KV Cache 磁盘换页框架、基于注意力分数的精准预取与分组淘汰策略 |
-| 4 | **HiFC** (NeurIPS 2025) | 高效 Flash-based KV Cache 交换，写放大效应分析与 SSD 寿命考量 |
-| 5 | **Linux O_DIRECT** (POSIX Direct I/O) | 绕过页缓存的直接 I/O 机制，用户态缓冲区对齐与大小约束 |
+| 1 | **LLM in a flash**（arXiv:2312.11514） | 上下文稀疏性预测、滑动窗口内存管理、行列捆绑布局优化 DMA 传输效率 |
+| 2 | **ActiveFlow / Active-Weight Swapping**（arXiv:2504.08378） | 活跃权重 DRAM-Flash 交换流水线、层组（Layer Group）预取机制、锁页内存作为 DMA 目标 |
+| 3 | **KVSwap**（arXiv:2511.11907） | KV Cache 磁盘换页框架、基于注意力分数的精准预取与分组淘汰策略 |
+| 4 | **HiFC**（NeurIPS 2025） | 高效 Flash-based KV Cache 交换，写放大效应分析与 SSD 寿命考量 |
+| 5 | **Linux O_DIRECT**（POSIX Direct I/O） | 绕过页缓存的直接 I/O 机制，用户态缓冲区对齐与大小约束 |
 | 6 | **VirtIO Specification** | virtqueue 描述符链、可用环/已用环的异步通知机制，作为 DMA 传输的底层基础 |
 | 7 | **NexOS / xv6 教学内核** | 生产者-消费者请求队列、sleep/wakeup 同步原语、三级页表管理、块缓冲缓存 |
-| 8 | **KVStream** (Microsoft, 2025) | 端侧 LLM 推理内存管理，KV Cache 流式淘汰策略 |
-
-
-## 六、总结
-
-本报告基于 NexOS 现有代码实现，设计了一套端侧大模型权重高效利用的协同优化方案，核心包含三大机制：
-
-1. **权重复用与批处理调度**：扩展 `ai_service.c` 的请求队列，在 `ai_daemon.c` 中新增 `batch_group` 调度器，使多个请求共享同一次权重加载与前向计算。该设计可直接基于现有 8 槽请求队列和 `run_decode_steps` 层循环实现。
-
-2. **DMA 双缓冲循环队列**：引入 `ring_buffer_io` 结构，CPU 计算第 $L$ 层时 I/O 同时预取第 $L+N$ 层。该设计的循环队列结构、生产者-消费者同步逻辑可在当前 NexOS 用户态完全实现；但真正的异步 DMA 需要将 `virtio_disk.c` 从同步阻塞重构为异步提交模式。
-
-3. **Raw I/O 绕过文件系统缓存**：新增 `sys_async_raw_read` 系统调用，绕过 `bio.c` 的 30 个 `buf` 缓存，直接将磁盘数据 DMA 传输到用户态锁页内存。当前可通过构造临时 `buf` 直接调用 `virtio_disk_rw` 来模拟旁路逻辑。
-
-当前 NexOS 可完全实现软件层面的调度逻辑、数据结构和接口定义，但受限于 QEMU 单核模拟环境和 CPU 软件矩阵乘法，真正的"计算与 I/O 重叠"性能收益需等待 NPU 驱动和多核支持等未来能力。该设计为 NexOS 演进为端侧智能操作系统提供了架构清晰、逻辑严密的实现蓝图。
+| 8 | **KVStream**（Microsoft, 2025） | 端侧 LLM 推理内存管理，KV Cache 流式淘汰策略 |
